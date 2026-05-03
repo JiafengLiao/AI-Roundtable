@@ -285,8 +285,9 @@ function App() {
 }
 
 function formatError(error: unknown, fallback: string) {
-  if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
+  console.error(fallback, error);
+  if (typeof error === "string") return `${fallback}: ${error}`;
+  if (error instanceof Error) return `${fallback}: ${error.message}`;
   return fallback;
 }
 

@@ -17,6 +17,7 @@ export default [
         sourceType: "module"
       },
       globals: {
+        console: "readonly",
         document: "readonly",
         HTMLElement: "readonly",
         window: "readonly"
