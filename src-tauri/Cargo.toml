@@ -1,0 +1,22 @@
+[package]
+name = "apd-ai-roundtable-workbench"
+version = "0.1.0"
+description = "Windows local AI weekly roundtable content workbench"
+authors = ["APD"]
+edition = "2021"
+
+[lib]
+name = "apd_ai_roundtable_workbench_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+rss = "2.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.0", features = [] }
+time = { version = "0.3", features = ["formatting", "macros"] }

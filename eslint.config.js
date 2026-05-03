@@ -1,0 +1,35 @@
+import js from "@eslint/js";
+import tseslint from "@typescript-eslint/eslint-plugin";
+import tsParser from "@typescript-eslint/parser";
+import reactHooks from "eslint-plugin-react-hooks";
+
+export default [
+  {
+    ignores: ["dist", "src-tauri/target", "src-tauri/gen"]
+  },
+  js.configs.recommended,
+  {
+    files: ["src/**/*.{ts,tsx}", "vite.config.ts"],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: {
+        ecmaVersion: "latest",
+        sourceType: "module"
+      },
+      globals: {
+        document: "readonly",
+        HTMLElement: "readonly",
+        window: "readonly"
+      }
+    },
+    plugins: {
+      "@typescript-eslint": tseslint,
+      "react-hooks": reactHooks
+    },
+    rules: {
+      ...tseslint.configs.recommended.rules,
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "warn"
+    }
+  }
+];

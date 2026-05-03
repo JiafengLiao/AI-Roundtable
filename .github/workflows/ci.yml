@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    name: Typecheck and build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm.cmd install
+
+      - name: Typecheck
+        run: npm.cmd run typecheck
+
+      - name: Lint
+        run: npm.cmd run lint
+
+      - name: Frontend build
+        run: npm.cmd run build
+
+      - name: Tauri build smoke test
+        run: npm.cmd run tauri:build

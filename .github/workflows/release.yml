@@ -1,0 +1,40 @@
+name: Release Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "app-v*"
+
+jobs:
+  release:
+    name: Build Windows release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm.cmd install
+
+      - name: Build and draft GitHub release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "APD AI Roundtable Workbench ${{ github.ref_name }}"
+          releaseBody: "Draft Windows installer release. Validate SmartScreen behavior, install path, and local JSON storage before publishing."
+          releaseDraft: true
+          prerelease: true
