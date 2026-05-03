@@ -46,6 +46,7 @@ LLM connection rules:
 - Plan and draft generation run a connection check before invoking the model.
 - If a real provider is selected and connection/model invocation fails, the command returns an error instead of silently falling back to Mock output.
 - The UI shows a prompt and navigates back to Settings so the user can fix provider, Base URL, API Key, or selected model.
+- Response format is provider-aware: OpenAI uses strict `json_schema`; DeepSeek uses `json_object` plus prompt-level schema hints, matching DeepSeek's chat completion docs: https://api-docs.deepseek.com/api/create-chat-completion.
 
 ## Storage
 MVP storage is local JSON under `data/`.

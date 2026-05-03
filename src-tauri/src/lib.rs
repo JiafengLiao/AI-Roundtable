@@ -576,9 +576,29 @@ fn response_format(schema: &JsonSchemaSpec) -> serde_json::Value {
     })
 }
 
+fn response_format_for_provider(provider_id: &str, schema: &JsonSchemaSpec) -> serde_json::Value {
+    if provider_id == "deepseek" {
+        json!({ "type": "json_object" })
+    } else {
+        response_format(schema)
+    }
+}
+
+fn prompt_for_provider(provider_id: &str, prompt: String, schema: &JsonSchemaSpec) -> String {
+    if provider_id != "deepseek" {
+        return prompt;
+    }
+
+    let schema_json = serde_json::to_string(&schema.schema).unwrap_or_default();
+    format!(
+        "{prompt}\n\nDeepSeek JSON Output 要求：请只输出一个合法 JSON 对象，不要 markdown，不要解释文字。JSON 对象必须匹配这个 schema 的字段结构：\n{schema_json}"
+    )
+}
+
 fn openai_chat_json(
     client: &Client,
     url: &str,
+    provider_id: &str,
     api_key: &str,
     model: &str,
     system_prompt: &str,
@@ -593,7 +613,7 @@ fn openai_chat_json(
             {"role": "user", "content": user_prompt}
         ],
         "temperature": temperature,
-        "response_format": response_format(schema)
+        "response_format": response_format_for_provider(provider_id, schema)
     });
 
     let response: ChatCompletionResponse = client
@@ -790,6 +810,7 @@ fn generate_roundtable_plan(
         let model = required_selected_model(&settings)?;
         return generate_plan_with_openai_compatible(
             &hotspot,
+            &settings.provider_id,
             &settings.base_url,
             &api_key,
             &model,
@@ -845,6 +866,7 @@ fn generate_rule_based_plan(
 
 fn generate_plan_with_openai_compatible(
     hotspot: &HotspotCandidate,
+    provider_id: &str,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -866,7 +888,11 @@ fn generate_plan_with_openai_compatible(
         ("sourcesJson", sources),
         ("guestPersonasJson", guests),
     ]);
-    let prompt = render_template(&prompt_config.tasks.plan.user_template, &replacements);
+    let prompt = prompt_for_provider(
+        provider_id,
+        render_template(&prompt_config.tasks.plan.user_template, &replacements),
+        &prompt_config.schemas.plan,
+    );
 
     let body = json!({
         "model": model,
@@ -875,7 +901,7 @@ fn generate_plan_with_openai_compatible(
             {"role": "user", "content": prompt}
         ],
         "temperature": prompt_config.tasks.plan.temperature,
-        "response_format": response_format(&prompt_config.schemas.plan)
+        "response_format": response_format_for_provider(provider_id, &prompt_config.schemas.plan)
     });
 
     let response: ChatCompletionResponse = client
@@ -953,6 +979,7 @@ fn generate_episode_draft(
             generate_multi_agent_draft_with_openai_compatible(
                 &plan,
                 &hotspot,
+                &settings.provider_id,
                 &settings.base_url,
                 &api_key,
                 &model,
@@ -963,6 +990,7 @@ fn generate_episode_draft(
             generate_draft_with_openai_compatible(
                 &plan,
                 &hotspot,
+                &settings.provider_id,
                 &settings.base_url,
                 &api_key,
                 &model,
@@ -1041,6 +1069,7 @@ fn generate_rule_based_draft(
 fn generate_draft_with_openai_compatible(
     plan: &RoundtablePlan,
     hotspot: &HotspotCandidate,
+    provider_id: &str,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -1064,7 +1093,11 @@ fn generate_draft_with_openai_compatible(
         ("sourcesJson", sources_json),
         ("guestPersonasJson", guests_json),
     ]);
-    let prompt = render_template(&prompt_config.tasks.draft.user_template, &replacements);
+    let prompt = prompt_for_provider(
+        provider_id,
+        render_template(&prompt_config.tasks.draft.user_template, &replacements),
+        &prompt_config.schemas.draft,
+    );
     let body = json!({
         "model": model,
         "messages": [
@@ -1072,7 +1105,7 @@ fn generate_draft_with_openai_compatible(
             {"role": "user", "content": prompt}
         ],
         "temperature": prompt_config.tasks.draft.temperature,
-        "response_format": response_format(&prompt_config.schemas.draft)
+        "response_format": response_format_for_provider(provider_id, &prompt_config.schemas.draft)
     });
     let response: ChatCompletionResponse = client
         .post(url)
@@ -1112,6 +1145,7 @@ fn generate_draft_with_openai_compatible(
 fn generate_multi_agent_draft_with_openai_compatible(
     plan: &RoundtablePlan,
     hotspot: &HotspotCandidate,
+    provider_id: &str,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -1136,14 +1170,19 @@ fn generate_multi_agent_draft_with_openai_compatible(
         ("sourcesJson", sources_json.clone()),
         ("guestPersonasJson", guests_json),
     ]);
-    let planner_prompt = render_template(
-        &prompt_config.tasks.draft_turn_planner.user_template,
-        &planner_replacements,
+    let planner_prompt = prompt_for_provider(
+        provider_id,
+        render_template(
+            &prompt_config.tasks.draft_turn_planner.user_template,
+            &planner_replacements,
+        ),
+        &prompt_config.schemas.turn_plan,
     );
     let planner_started_at = Instant::now();
     let planner_value = openai_chat_json(
         &client,
         &url,
+        provider_id,
         api_key,
         model,
         &prompt_config.tasks.draft_turn_planner.system_prompt,
@@ -1188,14 +1227,19 @@ fn generate_multi_agent_draft_with_openai_compatible(
                 },
             ),
         ]);
-        let turn_prompt = render_template(
-            &prompt_config.tasks.draft_guest_turn.user_template,
-            &turn_replacements,
+        let turn_prompt = prompt_for_provider(
+            provider_id,
+            render_template(
+                &prompt_config.tasks.draft_guest_turn.user_template,
+                &turn_replacements,
+            ),
+            &prompt_config.schemas.guest_turn,
         );
         let turn_started_at = Instant::now();
         let turn_value = openai_chat_json(
             &client,
             &url,
+            provider_id,
             api_key,
             model,
             &prompt_config.tasks.draft_guest_turn.system_prompt,
