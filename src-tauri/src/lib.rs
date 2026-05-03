@@ -631,7 +631,26 @@ fn string_array(value: &serde_json::Value, key: &str) -> Option<Vec<String>> {
 }
 
 #[tauri::command]
-fn generate_episode_draft(plan: RoundtablePlan, hotspot: HotspotCandidate) -> Result<EpisodeDraft, String> {
+fn generate_episode_draft(
+    plan: RoundtablePlan,
+    hotspot: HotspotCandidate,
+    settings: Option<ProviderSettings>,
+) -> Result<EpisodeDraft, String> {
+    if let Some(settings) = settings {
+        if settings.provider_id == "openai" || settings.provider_id == "deepseek" {
+            if let Some(api_key) = settings.api_key.clone().filter(|key| !key.trim().is_empty()) {
+                if let Some(model) = settings.selected_model.clone().filter(|model| !model.trim().is_empty()) {
+                    return generate_draft_with_openai_compatible(&plan, &hotspot, &settings.base_url, &api_key, &model)
+                        .or_else(|_| Ok(generate_rule_based_draft(plan, hotspot)));
+                }
+            }
+        }
+    }
+
+    Ok(generate_rule_based_draft(plan, hotspot))
+}
+
+fn generate_rule_based_draft(plan: RoundtablePlan, hotspot: HotspotCandidate) -> EpisodeDraft {
     let current_time = now();
     let source_names = hotspot
         .sources
@@ -640,7 +659,7 @@ fn generate_episode_draft(plan: RoundtablePlan, hotspot: HotspotCandidate) -> Re
         .collect::<Vec<_>>()
         .join("、");
 
-    Ok(EpisodeDraft {
+    EpisodeDraft {
         id: stable_id("draft", &format!("{}{}", plan.id, hotspot.id)),
         title: format!("圆桌：{}", hotspot.title),
         summary: format!(
@@ -692,7 +711,87 @@ fn generate_episode_draft(plan: RoundtablePlan, hotspot: HotspotCandidate) -> Re
         ],
         created_at: current_time.clone(),
         updated_at: current_time,
-    })
+    }
+}
+
+fn generate_draft_with_openai_compatible(
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+) -> Result<EpisodeDraft, String> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(90))
+        .user_agent("APD AI Roundtable Workbench/0.1")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let plan_json = serde_json::to_string(plan).map_err(|error| error.to_string())?;
+    let sources_json = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
+    let prompt = format!(
+        "请根据圆桌计划和来源生成中文圆桌稿。只输出 JSON，不要 markdown。字段必须包含 title, summary, dialogue, takeaways, factChecks。dialogue 每项包含 speakerId(host/participant/investor/expert), intent(open/context/intuition/business/technical/challenge/summary), text。\n热点：{}\n摘要：{}\n计划：{}\n来源：{}",
+        hotspot.title, hotspot.summary, plan_json, sources_json
+    );
+    let body = json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "你是一个资深 AI 媒体编辑和圆桌脚本制作人。你只输出可解析 JSON。不要声称模拟嘉宾是真实采访对象。"},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.5
+    });
+    let response: ChatCompletionResponse = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| error.to_string())?
+        .json()
+        .map_err(|error| error.to_string())?;
+    let content = response
+        .choices
+        .first()
+        .map(|choice| choice.message.content.clone())
+        .ok_or_else(|| "模型没有返回内容".to_string())?;
+    let value: serde_json::Value = serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
+    let mut draft = generate_rule_based_draft(plan.clone(), hotspot.clone());
+    if let Some(title) = value.get("title").and_then(|item| item.as_str()) {
+        draft.title = title.to_string();
+    }
+    if let Some(summary) = value.get("summary").and_then(|item| item.as_str()) {
+        draft.summary = summary.to_string();
+    }
+    if let Some(dialogue) = parse_dialogue(&value) {
+        draft.dialogue = dialogue;
+    }
+    if let Some(takeaways) = string_array(&value, "takeaways") {
+        draft.takeaways = takeaways;
+    }
+    if let Some(fact_checks) = string_array(&value, "factChecks") {
+        draft.fact_checks = fact_checks;
+    }
+    Ok(draft)
+}
+
+fn parse_dialogue(value: &serde_json::Value) -> Option<Vec<DialogueTurn>> {
+    let items = value.get("dialogue")?.as_array()?;
+    let turns = items
+        .iter()
+        .filter_map(|item| {
+            Some(DialogueTurn {
+                speaker_id: item.get("speakerId")?.as_str()?.to_string(),
+                intent: item.get("intent")?.as_str()?.to_string(),
+                text: item.get("text")?.as_str()?.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if turns.is_empty() {
+        None
+    } else {
+        Some(turns)
+    }
 }
 
 #[tauri::command]
@@ -923,6 +1022,7 @@ fn default_guests() -> Vec<GuestPersona> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_feeds,
             save_feeds,

@@ -24,6 +24,7 @@ import {
   getProviderSettings,
   getFeeds,
   listEpisodeDrafts,
+  openExternalUrl,
   refreshModelCatalog as refreshModelCatalogFromBackend,
   saveEpisodeDraft,
   saveFeeds,
@@ -48,6 +49,7 @@ function App() {
   const [feeds, setFeeds] = useState<FeedSource[]>([]);
   const [hotspots, setHotspots] = useState<HotspotCandidate[]>([]);
   const [selectedHotspot, setSelectedHotspot] = useState<HotspotCandidate | null>(null);
+  const [selectedHotspotIds, setSelectedHotspotIds] = useState<string[]>([]);
   const [roundtablePlan, setRoundtablePlan] = useState<RoundtablePlan | null>(null);
   const [episodeDraft, setEpisodeDraft] = useState<EpisodeDraft | null>(null);
   const [lastSavedPath, setLastSavedPath] = useState("");
@@ -72,6 +74,14 @@ function App() {
   });
 
   const selectedSources = useMemo(() => selectedHotspot?.sources ?? [], [selectedHotspot]);
+  const selectedHotspots = useMemo(
+    () => hotspots.filter((hotspot) => selectedHotspotIds.includes(hotspot.id)),
+    [hotspots, selectedHotspotIds]
+  );
+  const generationHotspot = useMemo(
+    () => mergeHotspots(selectedHotspots.length > 0 ? selectedHotspots : selectedHotspot ? [selectedHotspot] : []),
+    [selectedHotspot, selectedHotspots]
+  );
   const filteredHotspots = useMemo(() => filterHotspots(hotspots, filters), [hotspots, filters]);
   const availableTags = useMemo(() => Array.from(new Set(hotspots.flatMap((hotspot) => hotspot.matchedSignals))).sort(), [hotspots]);
   const availableSources = useMemo(
@@ -110,6 +120,7 @@ function App() {
     if (selectedHotspot && !filteredHotspots.some((hotspot) => hotspot.id === selectedHotspot.id)) {
       setSelectedHotspot(filteredHotspots[0] ?? null);
     }
+    setSelectedHotspotIds((current) => current.filter((id) => filteredHotspots.some((hotspot) => hotspot.id === id)));
   }, [filteredHotspots, selectedHotspot]);
 
   async function loadFeeds() {
@@ -130,6 +141,7 @@ function App() {
       setHotspots(result);
       const nextFiltered = filterHotspots(result, filters);
       setSelectedHotspot(nextFiltered[0] ?? result[0] ?? null);
+      setSelectedHotspotIds((nextFiltered[0] ?? result[0]) ? [(nextFiltered[0] ?? result[0]).id] : []);
       setRoundtablePlan(null);
       setEpisodeDraft(null);
       setJob({ id: "job-fetch", type: "fetch", status: "succeeded", message: `后端抓取完成，发现 ${result.length} 个候选热点` });
@@ -198,6 +210,7 @@ function App() {
       const candidate = await addManualHotspot({ ...input, category: "other" });
       setHotspots((current) => [candidate, ...current.filter((item) => item.id !== candidate.id)]);
       setSelectedHotspot(candidate);
+      setSelectedHotspotIds([candidate.id]);
       setJob({ id: "job-manual", type: "save", status: "succeeded", message: "手动热点已写入本地候选池" });
       setActiveView("workbench");
     } catch (error) {
@@ -206,17 +219,20 @@ function App() {
   }
 
   async function generatePlan() {
-    if (!selectedHotspot) {
+    if (!generationHotspot) {
       setJob({ id: "job-plan", type: "plan", status: "failed", message: "请先选择一个热点候选" });
       return;
     }
 
     try {
+      const startedAt = performance.now();
       setJob({ id: "job-plan", type: "plan", status: "running", message: "Rust 后端正在生成中控 agent 计划" });
-      const plan = await generateRoundtablePlan(selectedHotspot, currentProviderSettings());
+      const plan = await generateRoundtablePlan(generationHotspot, currentProviderSettings());
+      const elapsed = Math.round(performance.now() - startedAt);
+      console.info(`[AI timing] generate_roundtable_plan ${elapsed}ms`);
       setRoundtablePlan(plan);
       setEpisodeDraft(null);
-      setJob({ id: "job-plan", type: "plan", status: "succeeded", message: "中控 agent 计划已由后端生成" });
+      setJob({ id: "job-plan", type: "plan", status: "succeeded", message: `中控 agent 计划已生成，用时 ${elapsed}ms` });
       setActiveView("plan");
     } catch (error) {
       setJob({ id: "job-plan", type: "plan", status: "failed", message: formatError(error, "生成计划失败") });
@@ -224,19 +240,23 @@ function App() {
   }
 
   async function generateDraft() {
-    if (!selectedHotspot) {
+    if (!generationHotspot) {
       setJob({ id: "job-draft", type: "draft", status: "failed", message: "请先选择一个热点候选" });
       return;
     }
 
     try {
+      const startedAt = performance.now();
       setJob({ id: "job-draft", type: "draft", status: "running", message: "正在生成圆桌稿" });
-      const plan = roundtablePlan ?? (await generateRoundtablePlan(selectedHotspot, currentProviderSettings()));
-      const draft = await generateEpisodeDraft(plan, selectedHotspot);
+      const settings = currentProviderSettings();
+      const plan = roundtablePlan ?? (await generateRoundtablePlan(generationHotspot, settings));
+      const draft = await generateEpisodeDraft(plan, generationHotspot, settings);
+      const elapsed = Math.round(performance.now() - startedAt);
+      console.info(`[AI timing] generate_episode_draft ${elapsed}ms`);
       setRoundtablePlan(plan);
       setEpisodeDraft(draft);
       setLastSavedPath("");
-      setJob({ id: "job-draft", type: "draft", status: "succeeded", message: "圆桌稿已由后端生成，可编辑审核" });
+      setJob({ id: "job-draft", type: "draft", status: "succeeded", message: `圆桌稿已生成，用时 ${elapsed}ms` });
       setActiveView("draft");
     } catch (error) {
       setJob({ id: "job-draft", type: "draft", status: "failed", message: formatError(error, "生成稿件失败") });
@@ -311,6 +331,23 @@ function App() {
       setJob({ id: "job-settings", type: "save", status: "succeeded", message: "API Key 与模型设置已保存到本地" });
     } catch (error) {
       setJob({ id: "job-settings", type: "save", status: "failed", message: formatError(error, "保存模型设置失败") });
+    }
+  }
+
+  function toggleHotspotSelection(hotspot: HotspotCandidate) {
+    setSelectedHotspot(hotspot);
+    setSelectedHotspotIds((current) =>
+      current.includes(hotspot.id)
+        ? current.filter((id) => id !== hotspot.id)
+        : [...current, hotspot.id]
+    );
+  }
+
+  async function openSource(url: string) {
+    try {
+      await openExternalUrl(url);
+    } catch (error) {
+      setJob({ id: "job-open-source", type: "fetch", status: "failed", message: formatError(error, "打开来源失败") });
     }
   }
 
@@ -395,9 +432,11 @@ function App() {
                 hotspots={filteredHotspots}
                 totalHotspots={hotspots.length}
                 selectedHotspot={selectedHotspot}
+                selectedHotspotIds={selectedHotspotIds}
                 onGenerateDraft={generateDraft}
                 onGeneratePlan={generatePlan}
                 onSelectHotspot={setSelectedHotspot}
+                onToggleHotspotSelection={toggleHotspotSelection}
                 onFetch={runFetch}
               />
             )}
@@ -411,7 +450,9 @@ function App() {
                 onClearFilters={clearFilters}
                 onFiltersChange={setFilters}
                 onSelectHotspot={setSelectedHotspot}
+                onToggleHotspotSelection={toggleHotspotSelection}
                 selectedHotspot={selectedHotspot}
+                selectedHotspotIds={selectedHotspotIds}
                 totalHotspots={hotspots.length}
               />
             )}
@@ -453,7 +494,7 @@ function App() {
             )}
           </section>
 
-          {showInspector && <SourceInspector sources={selectedSources} />}
+          {showInspector && <SourceInspector onOpenSource={openSource} sources={selectedSources} />}
         </div>
       </section>
     </main>
@@ -488,6 +529,31 @@ function filterHotspots(
       return matchesTime && matchesScore && matchesTag && matchesSource;
     })
     .sort((a, b) => b.score - a.score);
+}
+
+function mergeHotspots(hotspots: HotspotCandidate[]) {
+  if (hotspots.length === 0) return null;
+  if (hotspots.length === 1) return hotspots[0];
+
+  const sources = hotspots.flatMap((hotspot) => hotspot.sources);
+  const dedupedSources = sources.filter((source, index) => sources.findIndex((item) => item.url === source.url) === index);
+  const signals = hotspots.flatMap((hotspot) => hotspot.matchedSignals);
+  const dedupedSignals = Array.from(new Set(signals));
+  const score = Math.round(hotspots.reduce((sum, hotspot) => sum + hotspot.score, 0) / hotspots.length);
+
+  return {
+    id: `merged-${hotspots.map((hotspot) => hotspot.id).join("-")}`,
+    title: `多源圆桌：${hotspots.map((hotspot) => hotspot.title).slice(0, 3).join(" / ")}`,
+    summary: hotspots.map((hotspot) => hotspot.summary).join("\n\n"),
+    category: hotspots[0].category,
+    score,
+    status: "shortlisted",
+    sourceCount: dedupedSources.length,
+    sources: dedupedSources,
+    matchedSignals: dedupedSignals,
+    createdAt: new Date().toISOString(),
+    note: `由 ${hotspots.length} 个候选源合并生成`
+  } satisfies HotspotCandidate;
 }
 
 function StatusPill({ label, value, tone }: { label: string; value: string; tone: "success" | "warning" | "danger" | "neutral" }) {
@@ -525,19 +591,25 @@ function Workbench({
   hotspots,
   totalHotspots,
   selectedHotspot,
+  selectedHotspotIds,
   onGeneratePlan,
   onGenerateDraft,
   onSelectHotspot,
+  onToggleHotspotSelection,
   onFetch
 }: {
   hotspots: HotspotCandidate[];
   totalHotspots: number;
   selectedHotspot: HotspotCandidate | null;
+  selectedHotspotIds: string[];
   onGeneratePlan: () => void;
   onGenerateDraft: () => void;
   onSelectHotspot: (hotspot: HotspotCandidate) => void;
+  onToggleHotspotSelection: (hotspot: HotspotCandidate) => void;
   onFetch: () => void;
 }) {
+  const hasSelection = selectedHotspotIds.length > 0 || Boolean(selectedHotspot);
+
   return (
     <div className="viewStack">
       <section className="sectionHeader">
@@ -547,13 +619,13 @@ function Workbench({
           <p className="sectionMeta">当前显示 {hotspots.length} / {totalHotspots} 条候选</p>
         </div>
         <div className="buttonGroup">
-          <button className="ghostButton" disabled={!selectedHotspot} onClick={onGeneratePlan} type="button">
+          <button className="ghostButton" disabled={!hasSelection} onClick={onGeneratePlan} type="button">
             <Bot size={16} />
-            生成计划
+            生成计划{selectedHotspotIds.length > 1 ? `(${selectedHotspotIds.length})` : ""}
           </button>
-          <button className="primaryButton" disabled={!selectedHotspot} onClick={onGenerateDraft} type="button">
+          <button className="primaryButton" disabled={!hasSelection} onClick={onGenerateDraft} type="button">
             <Sparkles size={16} />
-            生成稿件
+            生成稿件{selectedHotspotIds.length > 1 ? `(${selectedHotspotIds.length})` : ""}
           </button>
         </div>
       </section>
@@ -566,13 +638,19 @@ function Workbench({
             <button
               className={selectedHotspot?.id === hotspot.id ? "hotspotCard selected" : "hotspotCard"}
               key={hotspot.id}
-              onClick={() => onSelectHotspot(hotspot)}
+              onClick={() => {
+                onSelectHotspot(hotspot);
+              }}
               type="button"
             >
               <div>
                 <span className="score">{hotspot.score}</span>
                 <span className="tag">{hotspot.category}</span>
               </div>
+              <label className="selectCheck" onClick={(event) => event.stopPropagation()}>
+                <input checked={selectedHotspotIds.includes(hotspot.id)} type="checkbox" onChange={() => onToggleHotspotSelection(hotspot)} />
+                选择用于生成
+              </label>
               <h3>{hotspot.title}</h3>
               <p>{hotspot.summary}</p>
               <footer>
@@ -630,7 +708,9 @@ function Hotspots({
   hotspots,
   onClearFilters,
   onFiltersChange,
+  onToggleHotspotSelection,
   selectedHotspot,
+  selectedHotspotIds,
   onSelectHotspot,
   totalHotspots
 }: {
@@ -640,7 +720,9 @@ function Hotspots({
   hotspots: HotspotCandidate[];
   onClearFilters: () => void;
   onFiltersChange: (filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string }) => void;
+  onToggleHotspotSelection: (hotspot: HotspotCandidate) => void;
   selectedHotspot: HotspotCandidate | null;
+  selectedHotspotIds: string[];
   onSelectHotspot: (hotspot: HotspotCandidate) => void;
   totalHotspots: number;
 }) {
@@ -691,6 +773,7 @@ function Hotspots({
       </div>
       <div className="dataTable hotspotTable">
         <div className="tableHeader">
+          <span>选择</span>
           <span>标题</span>
           <span>来源</span>
           <span>热度</span>
@@ -703,6 +786,14 @@ function Hotspots({
             onClick={() => onSelectHotspot(hotspot)}
             type="button"
           >
+            <span onClick={(event) => event.stopPropagation()}>
+              <input
+                aria-label={`选择 ${hotspot.title}`}
+                checked={selectedHotspotIds.includes(hotspot.id)}
+                onChange={() => onToggleHotspotSelection(hotspot)}
+                type="checkbox"
+              />
+            </span>
             <strong>{hotspot.title}</strong>
             <span>{hotspot.sources.map((source) => source.publisher).join("、")}</span>
             <span>{hotspot.score}</span>
@@ -859,7 +950,7 @@ function DraftEditor({ draft, lastSavedPath, onSaveDraft }: { draft: EpisodeDraf
   );
 }
 
-function SourceInspector({ sources }: { sources: HotspotCandidate["sources"] }) {
+function SourceInspector({ onOpenSource, sources }: { onOpenSource: (url: string) => void; sources: HotspotCandidate["sources"] }) {
   return (
     <aside className="inspector">
       <div className="inspectorHeader">
@@ -872,7 +963,7 @@ function SourceInspector({ sources }: { sources: HotspotCandidate["sources"] }) 
             <strong>{source.publisher}</strong>
             <span>{source.title}</span>
             {source.publishedAt && <small>{source.publishedAt}</small>}
-            <a href={source.url} rel="noreferrer" target="_blank">打开来源</a>
+            <button className="linkButton" onClick={() => onOpenSource(source.url)} type="button">打开来源</button>
           </article>
         ))}
       </div>

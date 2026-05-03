@@ -20,6 +20,7 @@ export default [
         console: "readonly",
         document: "readonly",
         HTMLElement: "readonly",
+        performance: "readonly",
         window: "readonly"
       }
     },

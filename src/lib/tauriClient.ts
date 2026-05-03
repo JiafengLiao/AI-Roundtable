@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { EpisodeDraft, FeedSource, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan } from "../types";
 
 export type ManualHotspotInput = {
@@ -29,8 +30,8 @@ export function generateRoundtablePlan(hotspot: HotspotCandidate, settings?: Pro
   return invoke<RoundtablePlan>("generate_roundtable_plan", { hotspot, settings });
 }
 
-export function generateEpisodeDraft(plan: RoundtablePlan, hotspot: HotspotCandidate) {
-  return invoke<EpisodeDraft>("generate_episode_draft", { plan, hotspot });
+export function generateEpisodeDraft(plan: RoundtablePlan, hotspot: HotspotCandidate, settings?: ProviderSettings) {
+  return invoke<EpisodeDraft>("generate_episode_draft", { plan, hotspot, settings });
 }
 
 export function saveEpisodeDraft(draft: EpisodeDraft) {
@@ -55,4 +56,8 @@ export function saveProviderSettings(settings: ProviderSettings) {
 
 export function listEpisodeDrafts() {
   return invoke<EpisodeDraft[]>("list_episode_drafts");
+}
+
+export function openExternalUrl(url: string) {
+  return openUrl(url);
 }

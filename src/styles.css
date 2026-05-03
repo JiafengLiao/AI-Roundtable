@@ -527,7 +527,7 @@ button {
 
 .hotspotTable .tableHeader,
 .hotspotTable .tableRow {
-  grid-template-columns: minmax(300px, 2.2fr) minmax(170px, 1fr) 72px minmax(170px, 1fr);
+  grid-template-columns: 52px minmax(300px, 2.2fr) minmax(170px, 1fr) 72px minmax(170px, 1fr);
 }
 
 .tableRow strong,
@@ -698,6 +698,24 @@ button {
 
 .historyDetail {
   min-width: 0;
+}
+
+.selectCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
+.linkButton {
+  justify-self: start;
+  border: 0;
+  color: #55f0dd;
+  background: transparent;
+  padding: 0;
+  font-size: 13px;
+  text-decoration: none;
 }
 
 @media (max-width: 1120px) {
