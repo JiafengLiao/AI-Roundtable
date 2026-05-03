@@ -90,3 +90,10 @@ export type ModelProvider = {
   models: string[];
   requiresApiKey: boolean;
 };
+
+export type ProviderSettings = {
+  providerId: string;
+  baseUrl: string;
+  apiKey?: string;
+  selectedModel?: string;
+};

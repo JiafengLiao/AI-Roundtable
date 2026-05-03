@@ -21,12 +21,16 @@ import {
   generateEpisodeDraft,
   generateRoundtablePlan,
   getModelCatalog,
+  getProviderSettings,
   getFeeds,
+  listEpisodeDrafts,
+  refreshModelCatalog as refreshModelCatalogFromBackend,
   saveEpisodeDraft,
   saveFeeds,
+  saveProviderSettings,
   searchHotspots
 } from "./lib/tauriClient";
-import type { EpisodeDraft, FeedSource, GenerationJob, HotspotCandidate, ModelProvider, RoundtablePlan } from "./types";
+import type { EpisodeDraft, FeedSource, GenerationJob, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan } from "./types";
 
 const navItems = [
   { id: "workbench", label: "工作台", icon: Activity },
@@ -35,6 +39,7 @@ const navItems = [
   { id: "manual", label: "手动补充", icon: Plus },
   { id: "plan", label: "圆桌计划", icon: BrainCircuit },
   { id: "draft", label: "稿件编辑", icon: FileEdit },
+  { id: "history", label: "圆桌历史", icon: CheckCircle2 },
   { id: "settings", label: "设置", icon: Settings }
 ];
 
@@ -54,8 +59,11 @@ function App() {
     source: "all"
   });
   const [modelCatalog, setModelCatalog] = useState<ModelProvider[]>([]);
+  const [providerSettings, setProviderSettings] = useState<ProviderSettings[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState("mock");
   const [selectedModel, setSelectedModel] = useState("backend-rule-generator");
+  const [historyDrafts, setHistoryDrafts] = useState<EpisodeDraft[]>([]);
+  const [selectedHistoryDraft, setSelectedHistoryDraft] = useState<EpisodeDraft | null>(null);
   const [job, setJob] = useState<GenerationJob>({
     id: "job-001",
     type: "fetch",
@@ -70,15 +78,22 @@ function App() {
     () => Array.from(new Set(hotspots.flatMap((hotspot) => hotspot.sources.map((source) => source.publisher)))).sort(),
     [hotspots]
   );
-  const showInspector = ["workbench", "hotspots", "plan", "draft"].includes(activeView) && Boolean(selectedHotspot);
+  const showInspector = ["workbench", "plan", "draft"].includes(activeView) && Boolean(selectedHotspot);
 
   useEffect(() => {
     void (async () => {
       try {
         setJob({ id: "job-init", type: "fetch", status: "running", message: "正在连接 Tauri 后端" });
-        const [feedResult, catalogResult] = await Promise.all([getFeeds(), getModelCatalog()]);
+        const [feedResult, catalogResult, settingsResult, historyResult] = await Promise.all([
+          getFeeds(),
+          getModelCatalog(),
+          getProviderSettings(),
+          listEpisodeDrafts()
+        ]);
         setFeeds(feedResult);
         setModelCatalog(catalogResult);
+        setProviderSettings(settingsResult);
+        setHistoryDrafts(historyResult);
         const provider = catalogResult.find((item) => item.id === "mock") ?? catalogResult[0];
         if (provider) {
           setSelectedProviderId(provider.id);
@@ -140,6 +155,11 @@ function App() {
     setJob({ id: "job-week", type: "fetch", status: "succeeded", message: "已设置为本周时间范围，可继续筛选候选热点" });
   }
 
+  function updateDateRange(startDate: string, endDate: string) {
+    setFilters((current) => ({ ...current, startDate, endDate }));
+    setJob({ id: "job-date-range", type: "fetch", status: "succeeded", message: "日期范围已更新，可继续抓取或筛选热点" });
+  }
+
   function clearFilters() {
     setFilters({ startDate: "", endDate: "", minScore: 0, tag: "all", source: "all" });
   }
@@ -193,7 +213,7 @@ function App() {
 
     try {
       setJob({ id: "job-plan", type: "plan", status: "running", message: "Rust 后端正在生成中控 agent 计划" });
-      const plan = await generateRoundtablePlan(selectedHotspot);
+      const plan = await generateRoundtablePlan(selectedHotspot, currentProviderSettings());
       setRoundtablePlan(plan);
       setEpisodeDraft(null);
       setJob({ id: "job-plan", type: "plan", status: "succeeded", message: "中控 agent 计划已由后端生成" });
@@ -211,7 +231,7 @@ function App() {
 
     try {
       setJob({ id: "job-draft", type: "draft", status: "running", message: "正在生成圆桌稿" });
-      const plan = roundtablePlan ?? (await generateRoundtablePlan(selectedHotspot));
+      const plan = roundtablePlan ?? (await generateRoundtablePlan(selectedHotspot, currentProviderSettings()));
       const draft = await generateEpisodeDraft(plan, selectedHotspot);
       setRoundtablePlan(plan);
       setEpisodeDraft(draft);
@@ -233,10 +253,76 @@ function App() {
       setJob({ id: "job-save", type: "save", status: "running", message: "正在写入本地 JSON 草稿" });
       const path = await saveEpisodeDraft(episodeDraft);
       setLastSavedPath(path);
+      const history = await listEpisodeDrafts();
+      setHistoryDrafts(history);
       setJob({ id: "job-save", type: "save", status: "succeeded", message: `草稿已保存：${path}` });
     } catch (error) {
       setJob({ id: "job-save", type: "save", status: "failed", message: formatError(error, "保存草稿失败") });
     }
+  }
+
+  async function loadHistory() {
+    try {
+      setJob({ id: "job-history", type: "fetch", status: "running", message: "正在读取本地圆桌历史" });
+      const history = await listEpisodeDrafts();
+      setHistoryDrafts(history);
+      setSelectedHistoryDraft(history[0] ?? null);
+      setJob({ id: "job-history", type: "fetch", status: "succeeded", message: `已读取 ${history.length} 篇圆桌草稿` });
+    } catch (error) {
+      setJob({ id: "job-history", type: "fetch", status: "failed", message: formatError(error, "读取圆桌历史失败") });
+    }
+  }
+
+  function updatePlanAgenda(index: number, value: string) {
+    if (!roundtablePlan) return;
+    setRoundtablePlan({
+      ...roundtablePlan,
+      agenda: roundtablePlan.agenda.map((item, itemIndex) => (itemIndex === index ? value : item))
+    });
+  }
+
+  function updatePlanTension(index: number, value: string) {
+    if (!roundtablePlan) return;
+    setRoundtablePlan({
+      ...roundtablePlan,
+      tensionPoints: roundtablePlan.tensionPoints.map((item, itemIndex) => (itemIndex === index ? value : item))
+    });
+  }
+
+  async function refreshModelsFromProvider(settings: ProviderSettings) {
+    try {
+      setJob({ id: "job-models", type: "fetch", status: "running", message: "正在向模型厂商抓取模型列表" });
+      const catalog = await refreshModelCatalogFromBackend(settings);
+      setModelCatalog(catalog);
+      const provider = catalog.find((item) => item.id === settings.providerId);
+      if (provider) {
+        setSelectedModel(provider.models[0] ?? "");
+      }
+      setJob({ id: "job-models", type: "fetch", status: "succeeded", message: "模型列表已更新" });
+    } catch (error) {
+      setJob({ id: "job-models", type: "fetch", status: "failed", message: formatError(error, "更新模型列表失败") });
+    }
+  }
+
+  async function saveSettings(settings: ProviderSettings) {
+    try {
+      const saved = await saveProviderSettings(settings);
+      setProviderSettings(saved);
+      setJob({ id: "job-settings", type: "save", status: "succeeded", message: "API Key 与模型设置已保存到本地" });
+    } catch (error) {
+      setJob({ id: "job-settings", type: "save", status: "failed", message: formatError(error, "保存模型设置失败") });
+    }
+  }
+
+  function currentProviderSettings(): ProviderSettings {
+    const provider = modelCatalog.find((item) => item.id === selectedProviderId);
+    const saved = providerSettings.find((item) => item.providerId === selectedProviderId);
+    return {
+      providerId: selectedProviderId,
+      baseUrl: saved?.baseUrl ?? provider?.baseUrl ?? "local",
+      apiKey: saved?.apiKey,
+      selectedModel
+    };
   }
 
   return (
@@ -282,10 +368,12 @@ function App() {
             <h1>每周 AI 热点圆桌工作台</h1>
           </div>
           <div className="topbarActions">
-            <button className="ghostButton" onClick={setCurrentWeekRange} type="button">
-              <CalendarDays size={16} />
-              本周范围
-            </button>
+            <DateRangeControl
+              endDate={filters.endDate}
+              onSetCurrentWeek={setCurrentWeekRange}
+              onUpdate={updateDateRange}
+              startDate={filters.startDate}
+            />
             <button className="primaryButton" disabled={job.status === "running"} onClick={runFetch} type="button">
               <RefreshCcw size={16} />
               {job.status === "running" && job.type === "fetch" ? "抓取中" : "抓取 RSS"}
@@ -328,8 +416,24 @@ function App() {
               />
             )}
             {activeView === "manual" && <ManualInput onSubmit={handleManualAdd} />}
-            {activeView === "plan" && <PlanView plan={roundtablePlan} onGenerateDraft={generateDraft} />}
+            {activeView === "plan" && (
+              <PlanView
+                onGenerateDraft={generateDraft}
+                onGeneratePlan={generatePlan}
+                onUpdateAgenda={updatePlanAgenda}
+                onUpdateTension={updatePlanTension}
+                plan={roundtablePlan}
+              />
+            )}
             {activeView === "draft" && <DraftEditor draft={episodeDraft} lastSavedPath={lastSavedPath} onSaveDraft={saveDraft} />}
+            {activeView === "history" && (
+              <HistoryView
+                drafts={historyDrafts}
+                onRefresh={loadHistory}
+                onSelectDraft={setSelectedHistoryDraft}
+                selectedDraft={selectedHistoryDraft}
+              />
+            )}
             {activeView === "settings" && (
               <SettingsView
                 modelCatalog={modelCatalog}
@@ -339,7 +443,10 @@ function App() {
                   const provider = modelCatalog.find((item) => item.id === providerId);
                   setSelectedModel(provider?.models[0] ?? "");
                 }}
+                onRefreshFromProvider={refreshModelsFromProvider}
                 onRefreshModels={refreshModelCatalog}
+                onSaveSettings={saveSettings}
+                providerSettings={providerSettings}
                 selectedModel={selectedModel}
                 selectedProviderId={selectedProviderId}
               />
@@ -388,6 +495,28 @@ function StatusPill({ label, value, tone }: { label: string; value: string; tone
     <div className={`statusPill ${tone}`}>
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function DateRangeControl({
+  endDate,
+  onSetCurrentWeek,
+  onUpdate,
+  startDate
+}: {
+  endDate: string;
+  onSetCurrentWeek: () => void;
+  onUpdate: (startDate: string, endDate: string) => void;
+  startDate: string;
+}) {
+  return (
+    <div className="dateRangeControl">
+      <CalendarDays size={16} />
+      <input aria-label="开始日期" type="date" value={startDate} onChange={(event) => onUpdate(event.target.value, endDate)} />
+      <span>至</span>
+      <input aria-label="结束日期" type="date" value={endDate} onChange={(event) => onUpdate(startDate, event.target.value)} />
+      <button className="miniButton" onClick={onSetCurrentWeek} type="button">本周</button>
     </div>
   );
 }
@@ -483,8 +612,9 @@ function Feeds({ feeds, onRefresh, onToggleFeed }: { feeds: FeedSource[]; onRefr
             <strong>{feed.name}</strong>
             <span>{feed.category}</span>
             <span>{feed.lastStatus ?? "idle"}</span>
-            <button className="miniButton" onClick={() => onToggleFeed(feed.id)} type="button">
-              {feed.enabled ? "启用" : "禁用"}
+            <button aria-pressed={feed.enabled} className={feed.enabled ? "switch isOn" : "switch"} onClick={() => onToggleFeed(feed.id)} type="button">
+              <span />
+              <strong>{feed.enabled ? "启用" : "禁用"}</strong>
             </button>
           </div>
         ))}
@@ -624,9 +754,21 @@ function ManualInput({ onSubmit }: { onSubmit: (input: { title: string; summary:
   );
 }
 
-function PlanView({ plan, onGenerateDraft }: { plan: RoundtablePlan | null; onGenerateDraft: () => void }) {
+function PlanView({
+  plan,
+  onGenerateDraft,
+  onGeneratePlan,
+  onUpdateAgenda,
+  onUpdateTension
+}: {
+  plan: RoundtablePlan | null;
+  onGenerateDraft: () => void;
+  onGeneratePlan: () => void;
+  onUpdateAgenda: (index: number, value: string) => void;
+  onUpdateTension: (index: number, value: string) => void;
+}) {
   if (!plan) {
-    return <EmptyState title="还没有中控计划" text="先选择热点，再点击生成计划。" />;
+    return <EmptyState title="还没有中控计划" text="先选择热点，再点击生成议程。" actionLabel="生成议程" onAction={onGeneratePlan} />;
   }
 
   return (
@@ -636,6 +778,10 @@ function PlanView({ plan, onGenerateDraft }: { plan: RoundtablePlan | null; onGe
           <p className="eyebrow">中控 Agent 计划</p>
           <h2>{plan.objective}</h2>
         </div>
+        <button className="ghostButton" onClick={onGeneratePlan} type="button">
+          <Bot size={16} />
+          重新生成议程
+        </button>
         <button className="primaryButton" onClick={onGenerateDraft} type="button">
           <Sparkles size={16} />
           生成圆桌稿
@@ -644,14 +790,14 @@ function PlanView({ plan, onGenerateDraft }: { plan: RoundtablePlan | null; onGe
       <div className="planColumns">
         <div>
           <h3>议程</h3>
-          {plan.agenda.map((item) => (
-            <p className="agendaItem" key={item}>{item}</p>
+          {plan.agenda.map((item, index) => (
+            <textarea className="editablePlanItem" key={`${item}-${index}`} rows={3} value={item} onChange={(event) => onUpdateAgenda(index, event.target.value)} />
           ))}
         </div>
         <div>
           <h3>争议点</h3>
-          {plan.tensionPoints.map((item) => (
-            <p className="agendaItem warn" key={item}>{item}</p>
+          {plan.tensionPoints.map((item, index) => (
+            <textarea className="editablePlanItem warn" key={`${item}-${index}`} rows={3} value={item} onChange={(event) => onUpdateTension(index, event.target.value)} />
           ))}
         </div>
       </div>
@@ -748,22 +894,93 @@ function SourceInspector({ sources }: { sources: HotspotCandidate["sources"] }) 
   );
 }
 
+function HistoryView({
+  drafts,
+  onRefresh,
+  onSelectDraft,
+  selectedDraft
+}: {
+  drafts: EpisodeDraft[];
+  onRefresh: () => void;
+  onSelectDraft: (draft: EpisodeDraft) => void;
+  selectedDraft: EpisodeDraft | null;
+}) {
+  return (
+    <div className="historyLayout">
+      <section className="viewStack">
+        <section className="sectionHeader">
+          <div>
+            <p className="eyebrow">圆桌历史</p>
+            <h2>过去保存的圆桌草稿</h2>
+            <p className="sectionMeta">共 {drafts.length} 篇，点击左侧列表查看详情。</p>
+          </div>
+          <button className="ghostButton" onClick={onRefresh} type="button">
+            <RefreshCcw size={16} />
+            刷新
+          </button>
+        </section>
+        <div className="historyList">
+          {drafts.length === 0 ? (
+            <EmptyState title="还没有历史圆桌" text="保存草稿后，这里会显示过去的圆桌列表。" />
+          ) : (
+            drafts.map((draft) => (
+              <button className={selectedDraft?.id === draft.id ? "historyItem activeRow" : "historyItem"} key={draft.id} onClick={() => onSelectDraft(draft)} type="button">
+                <strong>{draft.title}</strong>
+                <span>{draft.updatedAt}</span>
+                <small>{draft.status}</small>
+              </button>
+            ))
+          )}
+        </div>
+      </section>
+      <section className="historyDetail">
+        {selectedDraft ? (
+          <DraftEditor draft={selectedDraft} lastSavedPath="" onSaveDraft={() => undefined} />
+        ) : (
+          <EmptyState title="选择一篇圆桌" text="点击左侧历史列表后，会在这里显示完整圆桌内容。" />
+        )}
+      </section>
+    </div>
+  );
+}
+
 function SettingsView({
   modelCatalog,
   onModelChange,
   onProviderChange,
+  onRefreshFromProvider,
   onRefreshModels,
+  onSaveSettings,
+  providerSettings,
   selectedModel,
   selectedProviderId
 }: {
   modelCatalog: ModelProvider[];
   onModelChange: (model: string) => void;
   onProviderChange: (providerId: string) => void;
+  onRefreshFromProvider: (settings: ProviderSettings) => void;
   onRefreshModels: () => void;
+  onSaveSettings: (settings: ProviderSettings) => void;
+  providerSettings: ProviderSettings[];
   selectedModel: string;
   selectedProviderId: string;
 }) {
   const provider = modelCatalog.find((item) => item.id === selectedProviderId);
+  const savedSettings = providerSettings.find((item) => item.providerId === selectedProviderId);
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
+
+  useEffect(() => {
+    setApiKey(savedSettings?.apiKey ?? "");
+    setBaseUrl(savedSettings?.baseUrl ?? provider?.baseUrl ?? "");
+  }, [provider?.baseUrl, savedSettings?.apiKey, savedSettings?.baseUrl, selectedProviderId]);
+
+  const currentSettings: ProviderSettings = {
+    providerId: selectedProviderId,
+    baseUrl,
+    apiKey,
+    selectedModel
+  };
 
   return (
     <div className="formPanel">
@@ -773,10 +990,16 @@ function SettingsView({
           <h2>模型厂商与模型选择</h2>
           <p className="sectionMeta">为控制成本，模型列表只在点击更新时刷新；当前生成仍使用后端规则 fallback。</p>
         </div>
-        <button className="ghostButton" onClick={onRefreshModels} type="button">
-          <RefreshCcw size={16} />
-          更新模型
-        </button>
+        <div className="buttonGroup">
+          <button className="ghostButton" onClick={onRefreshModels} type="button">
+            <RefreshCcw size={16} />
+            重置内置列表
+          </button>
+          <button className="primaryButton" onClick={() => onRefreshFromProvider(currentSettings)} type="button">
+            <RefreshCcw size={16} />
+            更新模型
+          </button>
+        </div>
       </section>
       <label>
         厂商
@@ -796,15 +1019,27 @@ function SettingsView({
       </label>
       <label>
         Base URL
-        <input value={provider?.baseUrl ?? ""} readOnly />
+        <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
       </label>
+      <label>
+        API Key
+        <input
+          autoComplete="off"
+          placeholder={provider?.requiresApiKey ? "输入后本地保存，界面不会明文展示完整 key" : "本地生成器不需要 API Key"}
+          type="password"
+          value={apiKey}
+          onChange={(event) => setApiKey(event.target.value)}
+        />
+      </label>
+      <button className="ghostButton" onClick={() => onSaveSettings(currentSettings)} type="button">
+        <Save size={16} />
+        保存设置
+      </button>
       <label>
         本地内容目录
         <input defaultValue="%APPDATA%/com.apd.ai-roundtable-workbench/" readOnly />
       </label>
-      <p className="mutedText">
-        API Key 后续会接入系统凭据或环境变量；这里先只完成厂商/模型选择和主动刷新入口。
-      </p>
+      <p className="mutedText">API Key 使用密码输入框展示，不会在界面明文显示完整内容；当前版本保存在本地 app data JSON，后续可迁移到系统凭据管理。</p>
     </div>
   );
 }

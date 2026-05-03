@@ -184,11 +184,84 @@ button {
   gap: 10px;
 }
 
+.dateRangeControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 8px;
+  border: 1px solid rgba(151, 174, 180, 0.14);
+  border-radius: 8px;
+  background: rgba(18, 25, 30, 0.72);
+}
+
+.dateRangeControl input {
+  width: 138px;
+  min-height: 30px;
+  border: 1px solid rgba(151, 174, 180, 0.18);
+  border-radius: 7px;
+  color: #edf7f8;
+  background: #0d1418;
+  padding: 0 8px;
+}
+
+.dateRangeControl span {
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
 .ghostButton,
 .primaryButton,
 .miniButton {
   padding: 0 14px;
   white-space: nowrap;
+}
+
+.switch {
+  display: inline-grid;
+  grid-template-columns: 34px auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  border: 1px solid rgba(151, 174, 180, 0.18);
+  border-radius: 999px;
+  color: #a9b8bd;
+  background: rgba(18, 25, 30, 0.72);
+  padding: 3px 10px 3px 4px;
+}
+
+.switch span {
+  width: 26px;
+  height: 20px;
+  border-radius: 999px;
+  background: #4a5860;
+  position: relative;
+}
+
+.switch span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #dbe5e9;
+  transition: transform 0.16s ease;
+}
+
+.switch.isOn {
+  border-color: rgba(85, 240, 221, 0.38);
+  color: #cffff7;
+  background: rgba(17, 56, 58, 0.58);
+}
+
+.switch.isOn span {
+  background: #1f8d83;
+}
+
+.switch.isOn span::after {
+  transform: translateX(6px);
 }
 
 .ghostButton:disabled,
@@ -246,7 +319,7 @@ button {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
   gap: 16px;
   align-items: start;
 }
@@ -454,7 +527,7 @@ button {
 
 .hotspotTable .tableHeader,
 .hotspotTable .tableRow {
-  grid-template-columns: minmax(260px, 2.4fr) minmax(140px, 1fr) 70px minmax(150px, 1fr);
+  grid-template-columns: minmax(300px, 2.2fr) minmax(170px, 1fr) 72px minmax(170px, 1fr);
 }
 
 .tableRow strong,
@@ -552,6 +625,22 @@ button {
   border-color: rgba(247, 194, 86, 0.24);
 }
 
+.editablePlanItem {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(151, 174, 180, 0.13);
+  border-radius: 8px;
+  color: #a9b8bd;
+  line-height: 1.55;
+  resize: vertical;
+  background: rgba(17, 24, 30, 0.72);
+}
+
+.editablePlanItem.warn {
+  border-color: rgba(247, 194, 86, 0.24);
+}
+
 .guestCard span,
 .turn span {
   color: #55f0dd;
@@ -576,6 +665,39 @@ button {
   gap: 8px;
   align-items: flex-start;
   padding: 12px;
+}
+
+.historyLayout {
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.historyList {
+  display: grid;
+  gap: 8px;
+}
+
+.historyItem {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.13);
+  border-radius: 8px;
+  color: inherit;
+  text-align: left;
+  background: rgba(17, 24, 30, 0.72);
+}
+
+.historyItem span,
+.historyItem small {
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
+.historyDetail {
+  min-width: 0;
 }
 
 @media (max-width: 1120px) {
@@ -605,7 +727,8 @@ button {
 
   .topbar,
   .sectionHeader,
-  .turn {
+  .turn,
+  .dateRangeControl {
     align-items: stretch;
     grid-template-columns: 1fr;
     flex-direction: column;
@@ -615,7 +738,8 @@ button {
   .hotspotGrid,
   .guestGrid,
   .planColumns,
-  .nav {
+  .nav,
+  .historyLayout {
     grid-template-columns: 1fr;
   }
 
