@@ -120,6 +120,17 @@ struct ManualHotspotInput {
     category: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ModelProvider {
+    id: String,
+    name: String,
+    #[serde(rename = "baseUrl")]
+    base_url: String,
+    models: Vec<String>,
+    #[serde(rename = "requiresApiKey")]
+    requires_api_key: bool,
+}
+
 fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -317,7 +328,14 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
 
         match fetch_result {
             Ok(bytes) => {
-                let channel = Channel::read_from(Cursor::new(bytes)).map_err(|error| error.to_string())?;
+                let channel = match Channel::read_from(Cursor::new(bytes)) {
+                    Ok(channel) => channel,
+                    Err(error) => {
+                        feed.last_fetched_at = Some(now());
+                        feed.last_status = Some(format!("failed: invalid rss xml: {error}"));
+                        continue;
+                    }
+                };
                 for item in channel.items().iter().take(12) {
                     let title = item.title().unwrap_or("Untitled AI update").trim().to_string();
                     let link = item.link().unwrap_or(&feed.url).trim().to_string();
@@ -531,6 +549,56 @@ fn save_episode_draft(app: tauri::AppHandle, draft: EpisodeDraft) -> Result<Stri
     Ok(path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn get_model_catalog() -> Vec<ModelProvider> {
+    vec![
+        ModelProvider {
+            id: "openai".into(),
+            name: "OpenAI".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            models: vec![
+                "gpt-5.4".into(),
+                "gpt-5.4-mini".into(),
+                "gpt-5.3-codex".into(),
+                "gpt-4.1".into(),
+            ],
+            requires_api_key: true,
+        },
+        ModelProvider {
+            id: "anthropic".into(),
+            name: "Anthropic".into(),
+            base_url: "https://api.anthropic.com".into(),
+            models: vec![
+                "claude-4.5-sonnet".into(),
+                "claude-4.5-haiku".into(),
+                "claude-4-opus".into(),
+            ],
+            requires_api_key: true,
+        },
+        ModelProvider {
+            id: "google".into(),
+            name: "Google Gemini".into(),
+            base_url: "https://generativelanguage.googleapis.com".into(),
+            models: vec!["gemini-2.5-pro".into(), "gemini-2.5-flash".into()],
+            requires_api_key: true,
+        },
+        ModelProvider {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            base_url: "https://api.deepseek.com".into(),
+            models: vec!["deepseek-chat".into(), "deepseek-reasoner".into()],
+            requires_api_key: true,
+        },
+        ModelProvider {
+            id: "mock".into(),
+            name: "本地规则生成器".into(),
+            base_url: "local".into(),
+            models: vec!["backend-rule-generator".into()],
+            requires_api_key: false,
+        },
+    ]
+}
+
 fn default_guests() -> Vec<GuestPersona> {
     vec![
         GuestPersona {
@@ -573,7 +641,8 @@ pub fn run() {
             add_manual_hotspot,
             generate_roundtable_plan,
             generate_episode_draft,
-            save_episode_draft
+            save_episode_draft,
+            get_model_catalog
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

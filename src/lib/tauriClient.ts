@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { EpisodeDraft, FeedSource, HotspotCandidate, RoundtablePlan } from "../types";
+import type { EpisodeDraft, FeedSource, HotspotCandidate, ModelProvider, RoundtablePlan } from "../types";
 
 export type ManualHotspotInput = {
   title: string;
@@ -35,4 +35,8 @@ export function generateEpisodeDraft(plan: RoundtablePlan, hotspot: HotspotCandi
 
 export function saveEpisodeDraft(draft: EpisodeDraft) {
   return invoke<string>("save_episode_draft", { draft });
+}
+
+export function getModelCatalog() {
+  return invoke<ModelProvider[]>("get_model_catalog");
 }

@@ -20,7 +20,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -160,6 +161,16 @@ button {
   font-size: 20px;
 }
 
+.compactHeader {
+  align-items: start;
+}
+
+.sectionMeta {
+  margin: 6px 0 0;
+  color: #8ea0a7;
+  font-size: 13px;
+}
+
 .eyebrow {
   margin: 0;
   text-transform: uppercase;
@@ -240,6 +251,10 @@ button {
   align-items: start;
 }
 
+.fullWorkspace {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .contentPane,
 .inspector,
 .formPanel {
@@ -280,15 +295,24 @@ button {
   margin: 16px 0;
 }
 
-.sourceList a {
+.sourceItem {
   display: grid;
   gap: 4px;
   padding: 12px;
   border: 1px solid rgba(151, 174, 180, 0.13);
   border-radius: 8px;
   color: #d8e7ea;
-  text-decoration: none;
   background: rgba(17, 24, 30, 0.72);
+}
+
+.sourceItem a {
+  color: #55f0dd;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.sourceItem small {
+  color: #8ea0a7;
 }
 
 .sourceList span,
@@ -393,22 +417,50 @@ button {
   background: #18242a;
 }
 
-.hotspotCard footer,
-.tableRow {
+.hotspotCard footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
+.dataTable,
 .tableLike {
   display: grid;
   gap: 8px;
 }
 
+.tableHeader,
 .tableRow {
+  display: grid;
+  align-items: center;
+  gap: 12px;
   min-height: 56px;
   padding: 12px;
+}
+
+.tableHeader {
+  min-height: 40px;
+  border-bottom: 1px solid rgba(151, 174, 180, 0.16);
+  color: #8ea0a7;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.feedTable .tableHeader,
+.feedTable .tableRow {
+  grid-template-columns: minmax(160px, 1.5fr) 110px minmax(180px, 1fr) 86px;
+}
+
+.hotspotTable .tableHeader,
+.hotspotTable .tableRow {
+  grid-template-columns: minmax(260px, 2.4fr) minmax(140px, 1fr) 70px minmax(150px, 1fr);
+}
+
+.tableRow strong,
+.tableRow span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .buttonRow {
@@ -456,8 +508,28 @@ button {
   color: #c8d5d9;
 }
 
+.filterBar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.13);
+  border-radius: 8px;
+  background: rgba(17, 24, 30, 0.72);
+}
+
+.filterBar label {
+  display: grid;
+  gap: 6px;
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
 .formPanel input,
-.formPanel textarea {
+.formPanel textarea,
+.formPanel select,
+.filterBar input,
+.filterBar select {
   width: 100%;
   border: 1px solid rgba(151, 174, 180, 0.18);
   border-radius: 8px;
@@ -550,5 +622,13 @@ button {
   .tableRow {
     display: grid;
     justify-items: start;
+  }
+
+  .filterBar,
+  .feedTable .tableHeader,
+  .feedTable .tableRow,
+  .hotspotTable .tableHeader,
+  .hotspotTable .tableRow {
+    grid-template-columns: 1fr;
   }
 }

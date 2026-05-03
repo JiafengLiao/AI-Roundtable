@@ -82,3 +82,11 @@ export type GenerationJob = {
   status: "idle" | "running" | "failed" | "succeeded";
   message: string;
 };
+
+export type ModelProvider = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  models: string[];
+  requiresApiKey: boolean;
+};
