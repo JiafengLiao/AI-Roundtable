@@ -29,7 +29,8 @@ import {
   saveEpisodeDraft,
   saveFeeds,
   saveProviderSettings,
-  searchHotspots
+  searchHotspots,
+  validateProviderConnection
 } from "./lib/tauriClient";
 import type { EpisodeDraft, FeedSource, GenerationJob, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan } from "./types";
 
@@ -228,9 +229,12 @@ function App() {
     }
 
     try {
+      const settings = currentProviderSettings();
+      const connected = await ensureLlmConnected(settings, "生成计划前模型连接检查失败");
+      if (!connected) return;
       const startedAt = performance.now();
       setJob({ id: "job-plan", type: "plan", status: "running", message: "Rust 后端正在生成中控 agent 计划" });
-      const plan = await generateRoundtablePlan(generationHotspot, currentProviderSettings());
+      const plan = await generateRoundtablePlan(generationHotspot, settings);
       const elapsed = Math.round(performance.now() - startedAt);
       console.info(`[AI timing] generate_roundtable_plan ${elapsed}ms`);
       setRoundtablePlan(plan);
@@ -239,6 +243,7 @@ function App() {
       setActiveView("plan");
     } catch (error) {
       setJob({ id: "job-plan", type: "plan", status: "failed", message: formatError(error, "生成计划失败") });
+      showLlmSettingsPrompt(error, "生成计划失败，模型连接或调用没有成功。");
     }
   }
 
@@ -249,9 +254,11 @@ function App() {
     }
 
     try {
+      const settings = currentProviderSettings();
+      const connected = await ensureLlmConnected(settings, "生成稿件前模型连接检查失败");
+      if (!connected) return;
       const startedAt = performance.now();
       setJob({ id: "job-draft", type: "draft", status: "running", message: "正在生成圆桌稿" });
-      const settings = currentProviderSettings();
       const plan = roundtablePlan ?? (await generateRoundtablePlan(generationHotspot, settings));
       const draft = await generateEpisodeDraft(plan, generationHotspot, settings);
       const elapsed = Math.round(performance.now() - startedAt);
@@ -263,6 +270,7 @@ function App() {
       setActiveView("draft");
     } catch (error) {
       setJob({ id: "job-draft", type: "draft", status: "failed", message: formatError(error, "生成稿件失败") });
+      showLlmSettingsPrompt(error, "生成稿件失败，模型连接或调用没有成功。");
     }
   }
 
@@ -329,12 +337,33 @@ function App() {
 
   async function saveSettings(settings: ProviderSettings) {
     try {
+      setJob({ id: "job-settings-check", type: "save", status: "running", message: "正在检查模型连接" });
+      const connectionMessage = await validateProviderConnection(settings);
       const saved = await saveProviderSettings(settings);
       setProviderSettings(saved);
-      setJob({ id: "job-settings", type: "save", status: "succeeded", message: "API Key 与模型设置已保存到本地" });
+      setJob({ id: "job-settings", type: "save", status: "succeeded", message: `模型设置已保存：${connectionMessage}` });
     } catch (error) {
       setJob({ id: "job-settings", type: "save", status: "failed", message: formatError(error, "保存模型设置失败") });
+      showLlmSettingsPrompt(error, "模型设置未保存，因为连接检查失败。");
     }
+  }
+
+  async function ensureLlmConnected(settings: ProviderSettings, fallback: string) {
+    try {
+      setJob({ id: "job-llm-check", type: "fetch", status: "running", message: "正在检查模型连接" });
+      await validateProviderConnection(settings);
+      return true;
+    } catch (error) {
+      setJob({ id: "job-llm-check", type: "fetch", status: "failed", message: formatError(error, fallback) });
+      showLlmSettingsPrompt(error, fallback);
+      return false;
+    }
+  }
+
+  function showLlmSettingsPrompt(error: unknown, fallback: string) {
+    const message = formatError(error, fallback);
+    window.alert(`${message}\n\n请回到设置页检查厂商、Base URL、API Key 和模型。`);
+    setActiveView("settings");
   }
 
   function toggleHotspotSelection(hotspot: HotspotCandidate) {

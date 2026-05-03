@@ -99,7 +99,13 @@ The files include:
 - `schemas.guestTurn`: JSON Schema for individual guest turns
 - `fallbacks`: rule-based fallback agenda, tension points, source risks, takeaways, and fact checks
 
-OpenAI-compatible generation sends the configured schema as `response_format: { type: "json_schema" }` when generating plans, one-shot drafts, central turn plans, and individual guest turns. Models that support constrained JSON output will follow the schema; if the API rejects the schema or output parsing fails, the app falls back to the local rule-based generator.
+OpenAI-compatible generation sends the configured schema as `response_format: { type: "json_schema" }` when generating plans, one-shot drafts, central turn plans, and individual guest turns. Models that support constrained JSON output will follow the schema. If a real provider is selected and connection, API, or parsing fails, the app surfaces the error and returns to Settings instead of silently falling back. The local rule-based generator runs only when the Mock provider is explicitly selected.
+
+Connection checks:
+
+- Saving model settings calls `validate_provider_connection`.
+- Generating a plan or draft calls `validate_provider_connection` before the model call.
+- Current generation support is OpenAI/DeepSeek style OpenAI-compatible chat completions plus Mock local generation.
 
 Draft generation mode is selected in Settings:
 

@@ -6,7 +6,7 @@ The MVP uses a Tauri v2 desktop shell with a React + TypeScript frontend.
 - React/Vite owns UI, local editing state, filtering, preview, and responsive layout.
 - Tauri commands own local file access, RSS fetching, provider configuration, and future Windows packaging concerns.
 - Local JSON files are the first persistence layer.
-- OpenAI-compatible LLM provider is planned, with Mock provider as the default fallback.
+- OpenAI-compatible LLM provider is supported for generation, with Mock provider as an explicit local generator.
 
 ## Data Model
 - `FeedSource`: RSS source metadata, category, enabled state, and fetch status.
@@ -40,6 +40,12 @@ Next implementation pass:
 5. The UI exposes fact-check and review state before saving or publishing.
 
 Bundled prompt files live under `config/prompts/`; runtime app data stores a composed versioned `llm-prompts.json` copy for local tuning.
+
+LLM connection rules:
+- Saving real provider settings runs a connection check first.
+- Plan and draft generation run a connection check before invoking the model.
+- If a real provider is selected and connection/model invocation fails, the command returns an error instead of silently falling back to Mock output.
+- The UI shows a prompt and navigates back to Settings so the user can fix provider, Base URL, API Key, or selected model.
 
 ## Storage
 MVP storage is local JSON under `data/`.

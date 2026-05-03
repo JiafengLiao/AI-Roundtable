@@ -46,6 +46,10 @@ export function refreshModelCatalog(settings: ProviderSettings) {
   return invoke<ModelProvider[]>("refresh_model_catalog", { settings });
 }
 
+export function validateProviderConnection(settings: ProviderSettings) {
+  return invoke<string>("validate_provider_connection", { settings });
+}
+
 export function getProviderSettings() {
   return invoke<ProviderSettings[]>("get_provider_settings");
 }

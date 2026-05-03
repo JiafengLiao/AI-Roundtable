@@ -70,4 +70,4 @@ Bundled prompts live under `config/prompts/`:
 - `schemas/*.schema.json`
 - `fallbacks.json`
 
-The backend composes those files into a versioned runtime config and sends strict JSON Schema response formats for models that support constrained output. If the LLM output cannot be parsed, generation falls back to the local rule-based generator.
+The backend composes those files into a versioned runtime config and sends strict JSON Schema response formats for models that support constrained output. If a real LLM provider is selected, invalid output or connection failure is surfaced as an error instead of silently falling back. The local rule-based generator is used only when the Mock provider is explicitly selected.

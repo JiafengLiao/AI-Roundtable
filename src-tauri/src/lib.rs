@@ -781,28 +781,21 @@ fn generate_roundtable_plan(
 ) -> Result<RoundtablePlan, String> {
     let prompt_config = get_or_seed_prompt_config(Some(&app))?;
     if let Some(settings) = settings {
-        if settings.provider_id == "openai" || settings.provider_id == "deepseek" {
-            if let Some(api_key) = settings
-                .api_key
-                .clone()
-                .filter(|key| !key.trim().is_empty())
-            {
-                if let Some(model) = settings
-                    .selected_model
-                    .clone()
-                    .filter(|model| !model.trim().is_empty())
-                {
-                    return generate_plan_with_openai_compatible(
-                        &hotspot,
-                        &settings.base_url,
-                        &api_key,
-                        &model,
-                        &prompt_config,
-                    )
-                    .or_else(|_| Ok(generate_rule_based_plan(hotspot, &prompt_config)));
-                }
-            }
+        if settings.provider_id == "mock" {
+            return Ok(generate_rule_based_plan(hotspot, &prompt_config));
         }
+
+        ensure_generation_provider_ready(&settings)?;
+        let api_key = required_api_key(&settings)?;
+        let model = required_selected_model(&settings)?;
+        return generate_plan_with_openai_compatible(
+            &hotspot,
+            &settings.base_url,
+            &api_key,
+            &model,
+            &prompt_config,
+        )
+        .map_err(|error| format!("LLM 生成计划失败，已停止本地 fallback：{error}"));
     }
 
     Ok(generate_rule_based_plan(hotspot, &prompt_config))
@@ -943,52 +936,44 @@ fn generate_episode_draft(
 ) -> Result<EpisodeDraft, String> {
     let prompt_config = get_or_seed_prompt_config(Some(&app))?;
     if let Some(settings) = settings {
-        if settings.provider_id == "openai" || settings.provider_id == "deepseek" {
-            if let Some(api_key) = settings
-                .api_key
-                .clone()
-                .filter(|key| !key.trim().is_empty())
-            {
-                if let Some(model) = settings
-                    .selected_model
-                    .clone()
-                    .filter(|model| !model.trim().is_empty())
-                {
-                    let mode = settings
-                        .draft_generation_mode
-                        .as_deref()
-                        .unwrap_or("single");
-                    let started_at = Instant::now();
-                    let result = if mode == "multi_agent" {
-                        println!("[AI timing] generate_multi_agent_draft start");
-                        generate_multi_agent_draft_with_openai_compatible(
-                            &plan,
-                            &hotspot,
-                            &settings.base_url,
-                            &api_key,
-                            &model,
-                            &prompt_config,
-                        )
-                    } else {
-                        println!("[AI timing] generate_single_draft start");
-                        generate_draft_with_openai_compatible(
-                            &plan,
-                            &hotspot,
-                            &settings.base_url,
-                            &api_key,
-                            &model,
-                            &prompt_config,
-                        )
-                    };
-                    println!(
-                        "[AI timing] generate_episode_draft backend {}ms",
-                        started_at.elapsed().as_millis()
-                    );
-                    return result
-                        .or_else(|_| Ok(generate_rule_based_draft(plan, hotspot, &prompt_config)));
-                }
-            }
+        if settings.provider_id == "mock" {
+            return Ok(generate_rule_based_draft(plan, hotspot, &prompt_config));
         }
+
+        ensure_generation_provider_ready(&settings)?;
+        let api_key = required_api_key(&settings)?;
+        let model = required_selected_model(&settings)?;
+        let mode = settings
+            .draft_generation_mode
+            .as_deref()
+            .unwrap_or("single");
+        let started_at = Instant::now();
+        let result = if mode == "multi_agent" {
+            println!("[AI timing] generate_multi_agent_draft start");
+            generate_multi_agent_draft_with_openai_compatible(
+                &plan,
+                &hotspot,
+                &settings.base_url,
+                &api_key,
+                &model,
+                &prompt_config,
+            )
+        } else {
+            println!("[AI timing] generate_single_draft start");
+            generate_draft_with_openai_compatible(
+                &plan,
+                &hotspot,
+                &settings.base_url,
+                &api_key,
+                &model,
+                &prompt_config,
+            )
+        };
+        println!(
+            "[AI timing] generate_episode_draft backend {}ms",
+            started_at.elapsed().as_millis()
+        );
+        return result.map_err(|error| format!("LLM 生成稿件失败，已停止本地 fallback：{error}"));
     }
 
     Ok(generate_rule_based_draft(plan, hotspot, &prompt_config))
@@ -1404,6 +1389,52 @@ fn refresh_model_catalog(settings: ProviderSettings) -> Result<Vec<ModelProvider
     Ok(catalog)
 }
 
+#[tauri::command]
+fn validate_provider_connection(settings: ProviderSettings) -> Result<String, String> {
+    if settings.provider_id == "mock" {
+        return Ok("本地规则生成器可用；不会调用外部 LLM。".into());
+    }
+
+    ensure_generation_provider_ready(&settings)?;
+    let models = fetch_provider_models(&settings)?;
+    Ok(format!(
+        "模型连接成功，已读取到 {} 个模型；生成时将不再静默 fallback。",
+        models.len()
+    ))
+}
+
+fn ensure_generation_provider_ready(settings: &ProviderSettings) -> Result<(), String> {
+    if settings.provider_id == "mock" {
+        return Ok(());
+    }
+    if settings.provider_id != "openai" && settings.provider_id != "deepseek" {
+        return Err("当前生成链路只支持 OpenAI / DeepSeek 这类 OpenAI-compatible 厂商；请先切换到已支持的厂商。".into());
+    }
+    if settings.base_url.trim().is_empty() {
+        return Err("Base URL 为空，请先在设置里填写模型厂商地址。".into());
+    }
+    let _api_key = required_api_key(settings)?;
+    let _model = required_selected_model(settings)?;
+    let _models = fetch_provider_models(settings)?;
+    Ok(())
+}
+
+fn required_api_key(settings: &ProviderSettings) -> Result<String, String> {
+    settings
+        .api_key
+        .clone()
+        .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| "API Key 为空，请先在设置里保存有效 API Key。".to_string())
+}
+
+fn required_selected_model(settings: &ProviderSettings) -> Result<String, String> {
+    settings
+        .selected_model
+        .clone()
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| "未选择模型，请先在设置里选择可用模型。".to_string())
+}
+
 fn default_provider_settings() -> Vec<ProviderSettings> {
     get_model_catalog()
         .into_iter()
@@ -1501,6 +1532,7 @@ pub fn run() {
             save_episode_draft,
             get_model_catalog,
             refresh_model_catalog,
+            validate_provider_connection,
             get_provider_settings,
             save_provider_settings,
             list_episode_drafts

@@ -14,7 +14,7 @@ The MVP is a tool for editors and AI practitioners. It is not a public reader ap
 - Desktop: Tauri v2
 - Frontend: React, TypeScript, Vite
 - Storage: local JSON files
-- LLM: OpenAI-compatible provider with Mock fallback
+- LLM: OpenAI-compatible provider with explicit Mock local generator
 - Packaging: Windows NSIS installer first, MSI later
 
 ## Local Setup
@@ -48,7 +48,7 @@ npm.cmd run tauri:build
 
 ## Current Status
 
-The repository contains a working local MVP: React calls Tauri commands through `invoke`, the Rust side reads/writes local JSON, fetches real RSS feeds, supports manual hotspot input, generates roundtable plans/drafts through OpenAI-compatible providers or a local rule-based fallback, and saves drafts locally.
+The repository contains a working local MVP: React calls Tauri commands through `invoke`, the Rust side reads/writes local JSON, fetches real RSS feeds, supports manual hotspot input, generates roundtable plans/drafts through OpenAI-compatible providers or the explicitly selected Mock local generator, and saves drafts locally. When a real LLM provider is selected, the app checks connectivity before saving settings and before generation; failed LLM calls no longer silently fall back to local generation.
 
 Bundled LLM prompts and guest personas are split by responsibility:
 
