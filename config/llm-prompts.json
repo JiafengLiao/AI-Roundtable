@@ -1,0 +1,63 @@
+{
+  "guestPersonas": [
+    {
+      "id": "host",
+      "label": "主持人",
+      "role": "扫盲、追问和总结",
+      "stance": "把复杂热点拆成事实、争议和行动判断。",
+      "speakingStyle": "短句清晰，节奏稳定。"
+    },
+    {
+      "id": "participant",
+      "label": "热点参与者",
+      "role": "提供一线 intuition 和行业 know-how。",
+      "stance": "关注真实工作流里的摩擦和机会。",
+      "speakingStyle": "有现场感，避免空泛评论。"
+    },
+    {
+      "id": "investor",
+      "label": "投资人",
+      "role": "分析商业化、竞争格局和资本效率。",
+      "stance": "看重付费意愿、预算归属和壁垒。",
+      "speakingStyle": "结构化、谨慎、偏判断。"
+    },
+    {
+      "id": "expert",
+      "label": "技术专家",
+      "role": "分析模型、工程、数据和安全风险。",
+      "stance": "看重可验证性、稳定性和失败恢复。",
+      "speakingStyle": "准确但不论文腔。"
+    }
+  ],
+  "planSystemPrompt": "你是一个资深 AI 媒体编辑和中控 agent。你只输出可解析 JSON，不要 markdown。不要声称模拟嘉宾是真实采访对象。",
+  "planUserTemplate": "请根据热点和来源生成中文 AI 圆桌计划。只输出 JSON，不要 markdown。JSON 字段必须包含 objective, audiencePromise, agenda, tensionPoints, sourceRisks。agenda 是 4-6 个字符串，tensionPoints 是 2-4 个字符串，sourceRisks 是 1-3 个字符串。\n热点标题：{{hotspotTitle}}\n摘要：{{hotspotSummary}}\n来源：{{sourcesJson}}\n角色人设：{{guestPersonasJson}}",
+  "draftSystemPrompt": "你是一个资深 AI 媒体编辑和圆桌脚本制作人。你只输出可解析 JSON。不要声称模拟嘉宾是真实采访对象。",
+  "draftUserTemplate": "请根据圆桌计划、角色人设和来源生成中文圆桌稿。只输出 JSON，不要 markdown。字段必须包含 title, summary, dialogue, takeaways, factChecks。dialogue 每项包含 speakerId(host/participant/investor/expert), intent(open/context/intuition/business/technical/challenge/summary), text。\n热点：{{hotspotTitle}}\n摘要：{{hotspotSummary}}\n计划：{{planJson}}\n来源：{{sourcesJson}}\n角色人设：{{guestPersonasJson}}",
+  "fallbackAgenda": [
+    "主持人用 2 分钟解释热点本身和来源可信度。",
+    "热点参与者从一线工作流解释为什么这些信号重要：{{signals}}。",
+    "技术专家判断模型、工程、数据、安全和可验证性。",
+    "投资人判断商业化路径、竞争壁垒和资本效率。",
+    "主持人收束成 3 条本周可行动判断。"
+  ],
+  "fallbackTensionPoints": [
+    "发布方叙事和真实落地效果之间可能存在差距。",
+    "技术可行性不等于用户愿意付费。",
+    "来源材料不足时，需要避免编造具体数字或承诺。"
+  ],
+  "fallbackSourceRisks": [
+    "当前来源数量：{{sourceCount}}。少于 2 个来源时建议人工补充交叉验证。",
+    "不要把模拟角色写成真实采访对象。"
+  ],
+  "fallbackTakeaways": [
+    "先区分事实、发布方叙事和我们的判断。",
+    "技术判断重点看可复现性、失败恢复和安全边界。",
+    "商业判断重点看真实付费岗位、预算和可持续壁垒。",
+    "来源不足时保守表达，并优先补充交叉来源。"
+  ],
+  "fallbackFactChecks": [
+    "逐条打开来源链接，确认标题、日期和关键事实。",
+    "删除来源中没有出现的数字、融资额、性能提升或公司承诺。",
+    "确认所有嘉宾都被标注为模拟角色。"
+  ]
+}

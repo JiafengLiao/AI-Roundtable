@@ -6,3 +6,4 @@ src-tauri/gen
 *.log
 data/drafts
 data/runtime
+!config/llm-prompts.json

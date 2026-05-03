@@ -49,3 +49,11 @@ npm.cmd run tauri:build
 ## Current Status
 
 The repository contains a working local MVP: React calls Tauri commands through `invoke`, the Rust side reads/writes local JSON, fetches real RSS feeds, supports manual hotspot input, generates a rule-based roundtable plan/draft, and saves drafts locally. Real LLM provider integration is the next implementation layer.
+
+LLM prompts and guest personas are editable in:
+
+```text
+config/llm-prompts.json
+```
+
+On first run, the app copies this config into the app data directory as `llm-prompts.json`; runtime generation reads that app data copy so prompts can be edited without recompiling.

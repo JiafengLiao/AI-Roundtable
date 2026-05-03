@@ -70,6 +70,29 @@ npm.cmd run tauri:dev
 
 Tauri backend calls use `invoke(...)`, not HTTP. They will not appear in the browser Network panel. Use the Tauri desktop window, check the DevTools Console for frontend errors, and check local JSON output under the app data directory for saved drafts.
 
+## LLM Prompt Configuration
+
+The source prompt and persona config lives at:
+
+```text
+config\llm-prompts.json
+```
+
+It includes:
+
+- Guest personas
+- Plan generation system/user prompt
+- Draft generation system/user prompt
+- Rule-based fallback agenda, tension points, source risks, takeaways, and fact checks
+
+On first run, the app seeds a writable copy into the Tauri app data directory:
+
+```text
+%APPDATA%\com.apd.ai-roundtable-workbench\llm-prompts.json
+```
+
+Runtime generation reads the app data copy. Edit that file for local prompt tuning without rebuilding, or edit `config\llm-prompts.json` to change the bundled default.
+
 If MSVC linker variables are missing, load the Visual Studio Build Tools environment first:
 
 ```powershell

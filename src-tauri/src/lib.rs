@@ -145,6 +145,30 @@ struct ProviderSettings {
     selected_model: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct LlmPromptConfig {
+    #[serde(rename = "guestPersonas")]
+    guest_personas: Vec<GuestPersona>,
+    #[serde(rename = "planSystemPrompt")]
+    plan_system_prompt: String,
+    #[serde(rename = "planUserTemplate")]
+    plan_user_template: String,
+    #[serde(rename = "draftSystemPrompt")]
+    draft_system_prompt: String,
+    #[serde(rename = "draftUserTemplate")]
+    draft_user_template: String,
+    #[serde(rename = "fallbackAgenda")]
+    fallback_agenda: Vec<String>,
+    #[serde(rename = "fallbackTensionPoints")]
+    fallback_tension_points: Vec<String>,
+    #[serde(rename = "fallbackSourceRisks")]
+    fallback_source_risks: Vec<String>,
+    #[serde(rename = "fallbackTakeaways")]
+    fallback_takeaways: Vec<String>,
+    #[serde(rename = "fallbackFactChecks")]
+    fallback_fact_checks: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAiModelList {
     data: Vec<OpenAiModelItem>,
@@ -350,6 +374,38 @@ fn provider_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("provider-settings.json"))
 }
 
+fn prompt_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("llm-prompts.json"))
+}
+
+fn bundled_prompt_config() -> Result<LlmPromptConfig, String> {
+    let content = include_str!("../../config/llm-prompts.json");
+    serde_json::from_str(content).map_err(|error| error.to_string())
+}
+
+fn get_or_seed_prompt_config(app: Option<&tauri::AppHandle>) -> Result<LlmPromptConfig, String> {
+    if let Some(app) = app {
+        let path = prompt_config_path(app)?;
+        if path.exists() {
+            read_json(path)
+        } else {
+            let config = bundled_prompt_config()?;
+            write_json(path, &config)?;
+            Ok(config)
+        }
+    } else {
+        bundled_prompt_config()
+    }
+}
+
+fn render_template(template: &str, replacements: &[(&str, String)]) -> String {
+    let mut rendered = template.to_string();
+    for (key, value) in replacements {
+        rendered = rendered.replace(&format!("{{{{{key}}}}}"), value);
+    }
+    rendered
+}
+
 fn get_or_seed_feeds(app: &tauri::AppHandle) -> Result<Vec<FeedSource>, String> {
     let path = feeds_path(app)?;
     if path.exists() {
@@ -501,22 +557,27 @@ fn add_manual_hotspot(app: tauri::AppHandle, input: ManualHotspotInput) -> Resul
 }
 
 #[tauri::command]
-fn generate_roundtable_plan(hotspot: HotspotCandidate, settings: Option<ProviderSettings>) -> Result<RoundtablePlan, String> {
+fn generate_roundtable_plan(
+    app: tauri::AppHandle,
+    hotspot: HotspotCandidate,
+    settings: Option<ProviderSettings>,
+) -> Result<RoundtablePlan, String> {
+    let prompt_config = get_or_seed_prompt_config(Some(&app))?;
     if let Some(settings) = settings {
         if settings.provider_id == "openai" || settings.provider_id == "deepseek" {
             if let Some(api_key) = settings.api_key.clone().filter(|key| !key.trim().is_empty()) {
                 if let Some(model) = settings.selected_model.clone().filter(|model| !model.trim().is_empty()) {
-                    return generate_plan_with_openai_compatible(&hotspot, &settings.base_url, &api_key, &model)
-                        .or_else(|_| Ok(generate_rule_based_plan(hotspot)));
+                    return generate_plan_with_openai_compatible(&hotspot, &settings.base_url, &api_key, &model, &prompt_config)
+                        .or_else(|_| Ok(generate_rule_based_plan(hotspot, &prompt_config)));
                 }
             }
         }
     }
 
-    Ok(generate_rule_based_plan(hotspot))
+    Ok(generate_rule_based_plan(hotspot, &prompt_config))
 }
 
-fn generate_rule_based_plan(hotspot: HotspotCandidate) -> RoundtablePlan {
+fn generate_rule_based_plan(hotspot: HotspotCandidate, prompt_config: &LlmPromptConfig) -> RoundtablePlan {
     let signals = if hotspot.matched_signals.is_empty() {
         "来源信号有限".to_string()
     } else {
@@ -528,19 +589,13 @@ fn generate_rule_based_plan(hotspot: HotspotCandidate) -> RoundtablePlan {
         hotspot_id: hotspot.id,
         objective: format!("围绕「{}」建立事实背景、行业直觉、商业判断和技术判断。", hotspot.title),
         audience_promise: "让 AI 从业者快速判断这个热点是否值得投入产品、研发或投资注意力。".into(),
-        guests: default_guests(),
-        agenda: vec![
-            "主持人用 2 分钟解释热点本身和来源可信度。".into(),
-            format!("热点参与者从一线工作流解释为什么这些信号重要：{signals}。"),
-            "技术专家判断模型、工程、数据、安全和可验证性。".into(),
-            "投资人判断商业化路径、竞争壁垒和资本效率。".into(),
-            "主持人收束成 3 条本周可行动判断。".into(),
-        ],
-        tension_points: vec![
-            "发布方叙事和真实落地效果之间可能存在差距。".into(),
-            "技术可行性不等于用户愿意付费。".into(),
-            "来源材料不足时，需要避免编造具体数字或承诺。".into(),
-        ],
+        guests: prompt_config.guest_personas.clone(),
+        agenda: prompt_config
+            .fallback_agenda
+            .iter()
+            .map(|item| render_template(item, &[("signals", signals.clone())]))
+            .collect(),
+        tension_points: prompt_config.fallback_tension_points.clone(),
         speaking_order: vec![
             "host".into(),
             "participant".into(),
@@ -548,10 +603,11 @@ fn generate_rule_based_plan(hotspot: HotspotCandidate) -> RoundtablePlan {
             "investor".into(),
             "host".into(),
         ],
-        source_risks: vec![
-            format!("当前来源数量：{}。少于 2 个来源时建议人工补充交叉验证。", hotspot.source_count),
-            "不要把模拟角色写成真实采访对象。".into(),
-        ],
+        source_risks: prompt_config
+            .fallback_source_risks
+            .iter()
+            .map(|item| render_template(item, &[("sourceCount", hotspot.source_count.to_string())]))
+            .collect(),
     }
 }
 
@@ -560,6 +616,7 @@ fn generate_plan_with_openai_compatible(
     base_url: &str,
     api_key: &str,
     model: &str,
+    prompt_config: &LlmPromptConfig,
 ) -> Result<RoundtablePlan, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(45))
@@ -568,15 +625,21 @@ fn generate_plan_with_openai_compatible(
         .map_err(|error| error.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let sources = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
-    let prompt = format!(
-        "请根据热点和来源生成中文 AI 圆桌计划。只输出 JSON，不要 markdown。JSON 字段必须包含 objective, audiencePromise, agenda, tensionPoints, sourceRisks。agenda 是 4-6 个字符串，tensionPoints 是 2-4 个字符串，sourceRisks 是 1-3 个字符串。\n热点标题：{}\n摘要：{}\n来源：{}",
-        hotspot.title, hotspot.summary, sources
+    let guests = serde_json::to_string(&prompt_config.guest_personas).map_err(|error| error.to_string())?;
+    let prompt = render_template(
+        &prompt_config.plan_user_template,
+        &[
+            ("hotspotTitle", hotspot.title.clone()),
+            ("hotspotSummary", hotspot.summary.clone()),
+            ("sourcesJson", sources),
+            ("guestPersonasJson", guests),
+        ],
     );
 
     let body = json!({
         "model": model,
         "messages": [
-            {"role": "system", "content": "你是一个资深 AI 媒体编辑和中控 agent。你只输出可解析 JSON。"},
+            {"role": "system", "content": prompt_config.plan_system_prompt},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.4
@@ -598,7 +661,7 @@ fn generate_plan_with_openai_compatible(
         .map(|choice| choice.message.content.clone())
         .ok_or_else(|| "模型没有返回内容".to_string())?;
     let value: serde_json::Value = serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
-    let mut plan = generate_rule_based_plan(hotspot.clone());
+    let mut plan = generate_rule_based_plan(hotspot.clone(), prompt_config);
     if let Some(objective) = value.get("objective").and_then(|item| item.as_str()) {
         plan.objective = objective.to_string();
     }
@@ -632,25 +695,27 @@ fn string_array(value: &serde_json::Value, key: &str) -> Option<Vec<String>> {
 
 #[tauri::command]
 fn generate_episode_draft(
+    app: tauri::AppHandle,
     plan: RoundtablePlan,
     hotspot: HotspotCandidate,
     settings: Option<ProviderSettings>,
 ) -> Result<EpisodeDraft, String> {
+    let prompt_config = get_or_seed_prompt_config(Some(&app))?;
     if let Some(settings) = settings {
         if settings.provider_id == "openai" || settings.provider_id == "deepseek" {
             if let Some(api_key) = settings.api_key.clone().filter(|key| !key.trim().is_empty()) {
                 if let Some(model) = settings.selected_model.clone().filter(|model| !model.trim().is_empty()) {
-                    return generate_draft_with_openai_compatible(&plan, &hotspot, &settings.base_url, &api_key, &model)
-                        .or_else(|_| Ok(generate_rule_based_draft(plan, hotspot)));
+                    return generate_draft_with_openai_compatible(&plan, &hotspot, &settings.base_url, &api_key, &model, &prompt_config)
+                        .or_else(|_| Ok(generate_rule_based_draft(plan, hotspot, &prompt_config)));
                 }
             }
         }
     }
 
-    Ok(generate_rule_based_draft(plan, hotspot))
+    Ok(generate_rule_based_draft(plan, hotspot, &prompt_config))
 }
 
-fn generate_rule_based_draft(plan: RoundtablePlan, hotspot: HotspotCandidate) -> EpisodeDraft {
+fn generate_rule_based_draft(plan: RoundtablePlan, hotspot: HotspotCandidate, prompt_config: &LlmPromptConfig) -> EpisodeDraft {
     let current_time = now();
     let source_names = hotspot
         .sources
@@ -698,17 +763,8 @@ fn generate_rule_based_draft(plan: RoundtablePlan, hotspot: HotspotCandidate) ->
                 text: format!("所以这期先给一个保守判断：它值得关注，但结论要继续回到来源和证据。当前主要来源包括：{}。", source_names),
             },
         ],
-        takeaways: vec![
-            "先区分事实、发布方叙事和我们的判断。".into(),
-            "技术判断重点看可复现性、失败恢复和安全边界。".into(),
-            "商业判断重点看真实付费岗位、预算和可持续壁垒。".into(),
-            "来源不足时保守表达，并优先补充交叉来源。".into(),
-        ],
-        fact_checks: vec![
-            "逐条打开来源链接，确认标题、日期和关键事实。".into(),
-            "删除来源中没有出现的数字、融资额、性能提升或公司承诺。".into(),
-            "确认所有嘉宾都被标注为模拟角色。".into(),
-        ],
+        takeaways: prompt_config.fallback_takeaways.clone(),
+        fact_checks: prompt_config.fallback_fact_checks.clone(),
         created_at: current_time.clone(),
         updated_at: current_time,
     }
@@ -720,6 +776,7 @@ fn generate_draft_with_openai_compatible(
     base_url: &str,
     api_key: &str,
     model: &str,
+    prompt_config: &LlmPromptConfig,
 ) -> Result<EpisodeDraft, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(90))
@@ -729,14 +786,21 @@ fn generate_draft_with_openai_compatible(
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let plan_json = serde_json::to_string(plan).map_err(|error| error.to_string())?;
     let sources_json = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
-    let prompt = format!(
-        "请根据圆桌计划和来源生成中文圆桌稿。只输出 JSON，不要 markdown。字段必须包含 title, summary, dialogue, takeaways, factChecks。dialogue 每项包含 speakerId(host/participant/investor/expert), intent(open/context/intuition/business/technical/challenge/summary), text。\n热点：{}\n摘要：{}\n计划：{}\n来源：{}",
-        hotspot.title, hotspot.summary, plan_json, sources_json
+    let guests_json = serde_json::to_string(&plan.guests).map_err(|error| error.to_string())?;
+    let prompt = render_template(
+        &prompt_config.draft_user_template,
+        &[
+            ("hotspotTitle", hotspot.title.clone()),
+            ("hotspotSummary", hotspot.summary.clone()),
+            ("planJson", plan_json),
+            ("sourcesJson", sources_json),
+            ("guestPersonasJson", guests_json),
+        ],
     );
     let body = json!({
         "model": model,
         "messages": [
-            {"role": "system", "content": "你是一个资深 AI 媒体编辑和圆桌脚本制作人。你只输出可解析 JSON。不要声称模拟嘉宾是真实采访对象。"},
+            {"role": "system", "content": prompt_config.draft_system_prompt},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.5
@@ -756,7 +820,7 @@ fn generate_draft_with_openai_compatible(
         .map(|choice| choice.message.content.clone())
         .ok_or_else(|| "模型没有返回内容".to_string())?;
     let value: serde_json::Value = serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
-    let mut draft = generate_rule_based_draft(plan.clone(), hotspot.clone());
+    let mut draft = generate_rule_based_draft(plan.clone(), hotspot.clone(), prompt_config);
     if let Some(title) = value.get("title").and_then(|item| item.as_str()) {
         draft.title = title.to_string();
     }
@@ -985,39 +1049,6 @@ fn fetch_provider_models(settings: &ProviderSettings) -> Result<Vec<String>, Str
         }
         _ => Err("暂不支持该厂商的模型列表抓取。".into()),
     }
-}
-
-fn default_guests() -> Vec<GuestPersona> {
-    vec![
-        GuestPersona {
-            id: "host".into(),
-            label: "主持人".into(),
-            role: "扫盲、追问和总结".into(),
-            stance: "把复杂热点拆成事实、争议和行动判断。".into(),
-            speaking_style: "短句清晰，节奏稳定。".into(),
-        },
-        GuestPersona {
-            id: "participant".into(),
-            label: "热点参与者".into(),
-            role: "提供一线 intuition 和行业 know-how。".into(),
-            stance: "关注真实工作流里的摩擦和机会。".into(),
-            speaking_style: "有现场感，避免空泛评论。".into(),
-        },
-        GuestPersona {
-            id: "investor".into(),
-            label: "投资人".into(),
-            role: "分析商业化、竞争格局和资本效率。".into(),
-            stance: "看重付费意愿、预算归属和壁垒。".into(),
-            speaking_style: "结构化、谨慎、偏判断。".into(),
-        },
-        GuestPersona {
-            id: "expert".into(),
-            label: "技术专家".into(),
-            role: "分析模型、工程、数据和安全风险。".into(),
-            stance: "看重可验证性、稳定性和失败恢复。".into(),
-            speaking_style: "准确但不论文腔。".into(),
-        },
-    ]
 }
 
 pub fn run() {
