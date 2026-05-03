@@ -96,4 +96,5 @@ export type ProviderSettings = {
   baseUrl: string;
   apiKey?: string;
   selectedModel?: string;
+  draftGenerationMode?: "single" | "multi_agent";
 };

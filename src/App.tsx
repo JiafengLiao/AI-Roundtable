@@ -64,6 +64,7 @@ function App() {
   const [providerSettings, setProviderSettings] = useState<ProviderSettings[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState("mock");
   const [selectedModel, setSelectedModel] = useState("backend-rule-generator");
+  const [draftGenerationMode, setDraftGenerationMode] = useState<"single" | "multi_agent">("single");
   const [historyDrafts, setHistoryDrafts] = useState<EpisodeDraft[]>([]);
   const [selectedHistoryDraft, setSelectedHistoryDraft] = useState<EpisodeDraft | null>(null);
   const [job, setJob] = useState<GenerationJob>({
@@ -108,6 +109,8 @@ function App() {
         if (provider) {
           setSelectedProviderId(provider.id);
           setSelectedModel(provider.models[0] ?? "");
+          const saved = settingsResult.find((item) => item.providerId === provider.id);
+          setDraftGenerationMode(saved?.draftGenerationMode ?? "single");
         }
         setJob({ id: "job-init", type: "fetch", status: "succeeded", message: `后端已连接，已加载 ${feedResult.length} 个 RSS 源` });
       } catch (error) {
@@ -358,7 +361,8 @@ function App() {
       providerId: selectedProviderId,
       baseUrl: saved?.baseUrl ?? provider?.baseUrl ?? "local",
       apiKey: saved?.apiKey,
-      selectedModel
+      selectedModel,
+      draftGenerationMode
     };
   }
 
@@ -482,8 +486,12 @@ function App() {
                 onProviderChange={(providerId) => {
                   setSelectedProviderId(providerId);
                   const provider = modelCatalog.find((item) => item.id === providerId);
+                  const saved = providerSettings.find((item) => item.providerId === providerId);
                   setSelectedModel(provider?.models[0] ?? "");
+                  setDraftGenerationMode(saved?.draftGenerationMode ?? "single");
                 }}
+                draftGenerationMode={draftGenerationMode}
+                onDraftGenerationModeChange={setDraftGenerationMode}
                 onRefreshFromProvider={refreshModelsFromProvider}
                 onRefreshModels={refreshModelCatalog}
                 onSaveSettings={saveSettings}
@@ -1036,7 +1044,9 @@ function HistoryView({
 }
 
 function SettingsView({
+  draftGenerationMode,
   modelCatalog,
+  onDraftGenerationModeChange,
   onModelChange,
   onProviderChange,
   onRefreshFromProvider,
@@ -1046,7 +1056,9 @@ function SettingsView({
   selectedModel,
   selectedProviderId
 }: {
+  draftGenerationMode: "single" | "multi_agent";
   modelCatalog: ModelProvider[];
+  onDraftGenerationModeChange: (mode: "single" | "multi_agent") => void;
   onModelChange: (model: string) => void;
   onProviderChange: (providerId: string) => void;
   onRefreshFromProvider: (settings: ProviderSettings) => void;
@@ -1070,7 +1082,8 @@ function SettingsView({
     providerId: selectedProviderId,
     baseUrl,
     apiKey,
-    selectedModel
+    selectedModel,
+    draftGenerationMode
   };
 
   return (
@@ -1121,6 +1134,16 @@ function SettingsView({
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
         />
+      </label>
+      <label>
+        稿件生成模式
+        <select
+          value={draftGenerationMode}
+          onChange={(event) => onDraftGenerationModeChange(event.target.value as "single" | "multi_agent")}
+        >
+          <option value="single">一个模型直接生成整稿</option>
+          <option value="multi_agent">中控调度，多次调用嘉宾独立发言</option>
+        </select>
       </label>
       <button className="ghostButton" onClick={() => onSaveSettings(currentSettings)} type="button">
         <Save size={16} />

@@ -1,0 +1,45 @@
+{
+  "name": "roundtable_draft",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["title", "summary", "dialogue", "takeaways", "factChecks"],
+    "properties": {
+      "title": { "type": "string" },
+      "summary": { "type": "string" },
+      "dialogue": {
+        "type": "array",
+        "minItems": 8,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["speakerId", "intent", "text"],
+          "properties": {
+            "speakerId": {
+              "type": "string",
+              "enum": ["host", "participant", "investor", "expert"]
+            },
+            "intent": {
+              "type": "string",
+              "enum": ["open", "context", "intuition", "business", "technical", "challenge", "followup", "transition", "summary"]
+            },
+            "text": { "type": "string" }
+          }
+        }
+      },
+      "takeaways": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 5,
+        "items": { "type": "string" }
+      },
+      "factChecks": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 5,
+        "items": { "type": "string" }
+      }
+    }
+  }
+}

@@ -72,23 +72,39 @@ Tauri backend calls use `invoke(...)`, not HTTP. They will not appear in the bro
 
 ## LLM Prompt Configuration
 
-The source prompt and persona config lives at:
+The bundled prompt and persona config is split into multiple files:
 
 ```text
-config\llm-prompts.json
+config\prompts\personas.json
+config\prompts\style-guide.json
+config\prompts\tasks\plan.json
+config\prompts\tasks\draft-single.json
+config\prompts\tasks\draft-turn-planner.json
+config\prompts\tasks\draft-guest-turn.json
+config\prompts\schemas\*.schema.json
+config\prompts\fallbacks.json
 ```
 
-It includes:
+The files include:
 
 - `personas`: guest personas
 - `styleGuide`: conversation tone, safety rules, and relaxed roundtable style guidance
 - `tasks.plan`: plan generation system/user prompt and temperature
-- `tasks.draft`: draft generation system/user prompt and temperature
+- `tasks.draft`: one-shot draft generation system/user prompt and temperature
+- `tasks.draftTurnPlanner`: central agent turn planning for multi-agent generation
+- `tasks.draftGuestTurn`: per-guest single-turn generation prompt
 - `schemas.plan`: JSON Schema for constrained plan output
 - `schemas.draft`: JSON Schema for constrained draft output
+- `schemas.turnPlan`: JSON Schema for central-agent turn plans
+- `schemas.guestTurn`: JSON Schema for individual guest turns
 - `fallbacks`: rule-based fallback agenda, tension points, source risks, takeaways, and fact checks
 
-OpenAI-compatible generation sends the configured schema as `response_format: { type: "json_schema" }` when generating plans and drafts. Models that support constrained JSON output will follow the schema; if the API rejects the schema or output parsing fails, the app falls back to the local rule-based generator.
+OpenAI-compatible generation sends the configured schema as `response_format: { type: "json_schema" }` when generating plans, one-shot drafts, central turn plans, and individual guest turns. Models that support constrained JSON output will follow the schema; if the API rejects the schema or output parsing fails, the app falls back to the local rule-based generator.
+
+Draft generation mode is selected in Settings:
+
+- `single`: one model call generates the complete `EpisodeDraft`.
+- `multi_agent`: one central-agent call plans at least 8 turns, then the backend calls the model once per scheduled guest turn so guests can naturally接话、追问、轻微分歧。
 
 On first run, the app seeds a writable copy into the Tauri app data directory:
 
@@ -96,7 +112,7 @@ On first run, the app seeds a writable copy into the Tauri app data directory:
 %APPDATA%\com.apd.ai-roundtable-workbench\llm-prompts.json
 ```
 
-Runtime generation reads the app data copy. Edit that file for local prompt tuning without rebuilding, or edit `config\llm-prompts.json` to change the bundled default.
+Runtime generation reads the app data copy when it is version 3 or newer. Edit the app-data file for local prompt tuning without rebuilding, or edit files under `config\prompts\` to change the bundled default.
 
 If MSVC linker variables are missing, load the Visual Studio Build Tools environment first:
 

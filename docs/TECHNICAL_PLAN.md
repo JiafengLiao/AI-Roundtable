@@ -33,9 +33,13 @@ Next implementation pass:
 ## LLM Flow
 1. Candidate and sources go into the central planning prompt.
 2. LLM returns `RoundtablePlan` as structured JSON.
-3. Plan and source material go into the draft prompt.
-4. LLM returns `EpisodeDraft` as structured JSON.
+3. Plan and source material go into one of two draft modes:
+   - `single`: one constrained JSON call returns the complete `EpisodeDraft`.
+   - `multi_agent`: one constrained JSON call returns the central turn plan, then one constrained JSON call per scheduled guest turn returns natural dialogue text.
+4. The backend assembles `EpisodeDraft` as structured JSON.
 5. The UI exposes fact-check and review state before saving or publishing.
+
+Bundled prompt files live under `config/prompts/`; runtime app data stores a composed versioned `llm-prompts.json` copy for local tuning.
 
 ## Storage
 MVP storage is local JSON under `data/`.

@@ -24,7 +24,7 @@ Required roles:
 - Investor.
 - Technical expert.
 
-## Step 2: Draft Generation Agent
+## Step 2: Draft Generation
 Input:
 - `RoundtablePlan`.
 - Source material.
@@ -37,6 +37,17 @@ Output:
 - Dialogue turns.
 - Takeaways.
 - Fact-check checklist.
+
+Supported modes:
+- `single`: one OpenAI-compatible chat completion generates the whole draft under `roundtable_draft` JSON Schema.
+- `multi_agent`: the central agent first generates `roundtable_turn_plan`, then the backend calls the model once per scheduled guest turn using that speaker's persona and the accumulated transcript.
+
+Multi-agent mode requirements:
+- At least 8 dialogue turns, preferably 10 to 14.
+- The central agent decides who speaks, not a fixed mechanical role loop.
+- Guest turns must naturally接话, include追问 where useful, allow轻微分歧, and use口语化转场.
+- Each turn can be longer when the speaker has relevant domain experience, but length must add substance.
+- Avoid research-report, paper, PR, and generic AI-summary tone.
 
 ## Role Rules
 - Host explains, asks, challenges, and summarizes.
@@ -52,4 +63,11 @@ Output:
 - Keep disagreement meaningful; avoid four roles repeating the same conclusion.
 
 ## Prompt Shape
-The implementation should ask for strict JSON matching the TypeScript types. If the LLM returns invalid JSON, retry once with a repair prompt, then surface the error to the UI.
+Bundled prompts live under `config/prompts/`:
+- `personas.json`
+- `style-guide.json`
+- `tasks/*.json`
+- `schemas/*.schema.json`
+- `fallbacks.json`
+
+The backend composes those files into a versioned runtime config and sends strict JSON Schema response formats for models that support constrained output. If the LLM output cannot be parsed, generation falls back to the local rule-based generator.

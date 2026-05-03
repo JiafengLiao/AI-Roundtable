@@ -48,12 +48,16 @@ npm.cmd run tauri:build
 
 ## Current Status
 
-The repository contains a working local MVP: React calls Tauri commands through `invoke`, the Rust side reads/writes local JSON, fetches real RSS feeds, supports manual hotspot input, generates a rule-based roundtable plan/draft, and saves drafts locally. Real LLM provider integration is the next implementation layer.
+The repository contains a working local MVP: React calls Tauri commands through `invoke`, the Rust side reads/writes local JSON, fetches real RSS feeds, supports manual hotspot input, generates roundtable plans/drafts through OpenAI-compatible providers or a local rule-based fallback, and saves drafts locally.
 
-LLM prompts and guest personas are editable in:
+Bundled LLM prompts and guest personas are split by responsibility:
 
 ```text
-config/llm-prompts.json
+config/prompts/personas.json
+config/prompts/style-guide.json
+config/prompts/tasks/
+config/prompts/schemas/
+config/prompts/fallbacks.json
 ```
 
-On first run, the app copies this config into the app data directory as `llm-prompts.json`; runtime generation reads that app data copy so prompts can be edited without recompiling.
+On first run, the app composes those files into a writable app-data copy named `llm-prompts.json`. Version 3 prompt config supports one-shot draft generation and multi-agent draft generation where the central agent plans turns, then calls each simulated guest independently.

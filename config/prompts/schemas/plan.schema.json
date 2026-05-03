@@ -1,0 +1,31 @@
+{
+  "name": "roundtable_plan",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["objective", "audiencePromise", "agenda", "tensionPoints", "sourceRisks"],
+    "properties": {
+      "objective": { "type": "string" },
+      "audiencePromise": { "type": "string" },
+      "agenda": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 6,
+        "items": { "type": "string" }
+      },
+      "tensionPoints": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 4,
+        "items": { "type": "string" }
+      },
+      "sourceRisks": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 4,
+        "items": { "type": "string" }
+      }
+    }
+  }
+}

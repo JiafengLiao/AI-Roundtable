@@ -1,0 +1,12 @@
+{
+  "name": "roundtable_guest_turn",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["text"],
+    "properties": {
+      "text": { "type": "string" }
+    }
+  }
+}

@@ -2,6 +2,7 @@ use chrono::Utc;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
 use rss::Channel;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -10,7 +11,7 @@ use std::{
     hash::{Hash, Hasher},
     io::Cursor,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::Manager;
 
@@ -143,6 +144,8 @@ struct ProviderSettings {
     api_key: Option<String>,
     #[serde(rename = "selectedModel")]
     selected_model: Option<String>,
+    #[serde(rename = "draftGenerationMode")]
+    draft_generation_mode: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -171,6 +174,10 @@ struct StyleGuide {
 struct PromptTasks {
     plan: PromptTask,
     draft: PromptTask,
+    #[serde(rename = "draftTurnPlanner")]
+    draft_turn_planner: PromptTask,
+    #[serde(rename = "draftGuestTurn")]
+    draft_guest_turn: PromptTask,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -186,6 +193,10 @@ struct PromptTask {
 struct PromptSchemas {
     plan: JsonSchemaSpec,
     draft: JsonSchemaSpec,
+    #[serde(rename = "turnPlan")]
+    turn_plan: JsonSchemaSpec,
+    #[serde(rename = "guestTurn")]
+    guest_turn: JsonSchemaSpec,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -215,6 +226,29 @@ struct OpenAiModelList {
 #[derive(Debug, Deserialize)]
 struct OpenAiModelItem {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TurnPlanResponse {
+    title: String,
+    summary: String,
+    turns: Vec<TurnPlanItem>,
+    takeaways: Vec<String>,
+    #[serde(rename = "factChecks")]
+    fact_checks: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TurnPlanItem {
+    #[serde(rename = "speakerId")]
+    speaker_id: String,
+    intent: String,
+    instruction: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GuestTurnResponse {
+    text: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -416,20 +450,77 @@ fn prompt_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("llm-prompts.json"))
 }
 
+fn parse_bundled_json<T: DeserializeOwned>(name: &str, content: &str) -> Result<T, String> {
+    serde_json::from_str(content)
+        .map_err(|error| format!("invalid bundled prompt file {name}: {error}"))
+}
+
 fn bundled_prompt_config() -> Result<LlmPromptConfig, String> {
-    let content = include_str!("../../config/llm-prompts.json");
-    serde_json::from_str(content).map_err(|error| error.to_string())
+    Ok(LlmPromptConfig {
+        version: Some(3),
+        personas: parse_bundled_json(
+            "personas.json",
+            include_str!("../../config/prompts/personas.json"),
+        )?,
+        style_guide: parse_bundled_json(
+            "style-guide.json",
+            include_str!("../../config/prompts/style-guide.json"),
+        )?,
+        tasks: PromptTasks {
+            plan: parse_bundled_json(
+                "tasks/plan.json",
+                include_str!("../../config/prompts/tasks/plan.json"),
+            )?,
+            draft: parse_bundled_json(
+                "tasks/draft-single.json",
+                include_str!("../../config/prompts/tasks/draft-single.json"),
+            )?,
+            draft_turn_planner: parse_bundled_json(
+                "tasks/draft-turn-planner.json",
+                include_str!("../../config/prompts/tasks/draft-turn-planner.json"),
+            )?,
+            draft_guest_turn: parse_bundled_json(
+                "tasks/draft-guest-turn.json",
+                include_str!("../../config/prompts/tasks/draft-guest-turn.json"),
+            )?,
+        },
+        schemas: PromptSchemas {
+            plan: parse_bundled_json(
+                "schemas/plan.schema.json",
+                include_str!("../../config/prompts/schemas/plan.schema.json"),
+            )?,
+            draft: parse_bundled_json(
+                "schemas/draft.schema.json",
+                include_str!("../../config/prompts/schemas/draft.schema.json"),
+            )?,
+            turn_plan: parse_bundled_json(
+                "schemas/turn-plan.schema.json",
+                include_str!("../../config/prompts/schemas/turn-plan.schema.json"),
+            )?,
+            guest_turn: parse_bundled_json(
+                "schemas/guest-turn.schema.json",
+                include_str!("../../config/prompts/schemas/guest-turn.schema.json"),
+            )?,
+        },
+        fallbacks: parse_bundled_json(
+            "fallbacks.json",
+            include_str!("../../config/prompts/fallbacks.json"),
+        )?,
+    })
 }
 
 fn get_or_seed_prompt_config(app: Option<&tauri::AppHandle>) -> Result<LlmPromptConfig, String> {
     if let Some(app) = app {
         let path = prompt_config_path(app)?;
         if path.exists() {
-            read_json(path.clone()).or_else(|_| {
-                let config = bundled_prompt_config()?;
-                write_json(path, &config)?;
-                Ok(config)
-            })
+            match read_json::<LlmPromptConfig>(path.clone()) {
+                Ok(config) if config.version.unwrap_or_default() >= 3 => Ok(config),
+                _ => {
+                    let config = bundled_prompt_config()?;
+                    write_json(path, &config)?;
+                    Ok(config)
+                }
+            }
         } else {
             let config = bundled_prompt_config()?;
             write_json(path, &config)?;
@@ -458,13 +549,19 @@ fn guest_personas(prompt_config: &LlmPromptConfig) -> Vec<GuestPersona> {
 
 fn style_replacements(prompt_config: &LlmPromptConfig) -> Vec<(&'static str, String)> {
     vec![
-        ("conversationGoal", prompt_config.style_guide.conversation_goal.clone()),
+        (
+            "conversationGoal",
+            prompt_config.style_guide.conversation_goal.clone(),
+        ),
         ("toneRules", prompt_config.style_guide.tone.join("\n- ")),
         (
             "conversationDevices",
             prompt_config.style_guide.conversation_devices.join("\n- "),
         ),
-        ("safetyRules", prompt_config.style_guide.safety_rules.join("\n- ")),
+        (
+            "safetyRules",
+            prompt_config.style_guide.safety_rules.join("\n- "),
+        ),
     ]
 }
 
@@ -477,6 +574,44 @@ fn response_format(schema: &JsonSchemaSpec) -> serde_json::Value {
             "schema": schema.schema
         }
     })
+}
+
+fn openai_chat_json(
+    client: &Client,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: String,
+    temperature: f32,
+    schema: &JsonSchemaSpec,
+) -> Result<serde_json::Value, String> {
+    let body = json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": temperature,
+        "response_format": response_format(schema)
+    });
+
+    let response: ChatCompletionResponse = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|error| error.to_string())?
+        .json()
+        .map_err(|error| error.to_string())?;
+
+    let content = response
+        .choices
+        .first()
+        .map(|choice| choice.message.content.clone())
+        .ok_or_else(|| "模型没有返回内容".to_string())?;
+    serde_json::from_str(content.trim()).map_err(|error| error.to_string())
 }
 
 fn get_or_seed_feeds(app: &tauri::AppHandle) -> Result<Vec<FeedSource>, String> {
@@ -529,7 +664,11 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
                     }
                 };
                 for item in channel.items().iter().take(12) {
-                    let title = item.title().unwrap_or("Untitled AI update").trim().to_string();
+                    let title = item
+                        .title()
+                        .unwrap_or("Untitled AI update")
+                        .trim()
+                        .to_string();
                     let link = item.link().unwrap_or(&feed.url).trim().to_string();
                     let raw_summary = item
                         .description()
@@ -537,7 +676,9 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
                         .unwrap_or("来源未提供摘要，请打开链接查看原文。");
                     let summary = truncate(&strip_html(raw_summary), 220);
                     let signals = keyword_signals(&format!("{title} {summary}"));
-                    let score = (55 + signals.len() as u16 * 8 + (feed.category != "other") as u16 * 10).min(98);
+                    let score =
+                        (55 + signals.len() as u16 * 8 + (feed.category != "other") as u16 * 10)
+                            .min(98);
                     let source = Source {
                         id: stable_id("src", &link),
                         title: title.clone(),
@@ -582,7 +723,10 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
 }
 
 #[tauri::command]
-fn add_manual_hotspot(app: tauri::AppHandle, input: ManualHotspotInput) -> Result<HotspotCandidate, String> {
+fn add_manual_hotspot(
+    app: tauri::AppHandle,
+    input: ManualHotspotInput,
+) -> Result<HotspotCandidate, String> {
     if input.title.trim().is_empty() {
         return Err("热点标题不能为空".into());
     }
@@ -638,10 +782,24 @@ fn generate_roundtable_plan(
     let prompt_config = get_or_seed_prompt_config(Some(&app))?;
     if let Some(settings) = settings {
         if settings.provider_id == "openai" || settings.provider_id == "deepseek" {
-            if let Some(api_key) = settings.api_key.clone().filter(|key| !key.trim().is_empty()) {
-                if let Some(model) = settings.selected_model.clone().filter(|model| !model.trim().is_empty()) {
-                    return generate_plan_with_openai_compatible(&hotspot, &settings.base_url, &api_key, &model, &prompt_config)
-                        .or_else(|_| Ok(generate_rule_based_plan(hotspot, &prompt_config)));
+            if let Some(api_key) = settings
+                .api_key
+                .clone()
+                .filter(|key| !key.trim().is_empty())
+            {
+                if let Some(model) = settings
+                    .selected_model
+                    .clone()
+                    .filter(|model| !model.trim().is_empty())
+                {
+                    return generate_plan_with_openai_compatible(
+                        &hotspot,
+                        &settings.base_url,
+                        &api_key,
+                        &model,
+                        &prompt_config,
+                    )
+                    .or_else(|_| Ok(generate_rule_based_plan(hotspot, &prompt_config)));
                 }
             }
         }
@@ -650,7 +808,10 @@ fn generate_roundtable_plan(
     Ok(generate_rule_based_plan(hotspot, &prompt_config))
 }
 
-fn generate_rule_based_plan(hotspot: HotspotCandidate, prompt_config: &LlmPromptConfig) -> RoundtablePlan {
+fn generate_rule_based_plan(
+    hotspot: HotspotCandidate,
+    prompt_config: &LlmPromptConfig,
+) -> RoundtablePlan {
     let signals = if hotspot.matched_signals.is_empty() {
         "来源信号有限".to_string()
     } else {
@@ -660,7 +821,10 @@ fn generate_rule_based_plan(hotspot: HotspotCandidate, prompt_config: &LlmPrompt
     RoundtablePlan {
         id: stable_id("plan", &hotspot.id),
         hotspot_id: hotspot.id,
-        objective: format!("围绕「{}」建立事实背景、行业直觉、商业判断和技术判断。", hotspot.title),
+        objective: format!(
+            "围绕「{}」建立事实背景、行业直觉、商业判断和技术判断。",
+            hotspot.title
+        ),
         audience_promise: "让 AI 从业者快速判断这个热点是否值得投入产品、研发或投资注意力。".into(),
         guests: guest_personas(prompt_config),
         agenda: prompt_config
@@ -700,7 +864,8 @@ fn generate_plan_with_openai_compatible(
         .map_err(|error| error.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let sources = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
-    let guests = serde_json::to_string(&guest_personas(prompt_config)).map_err(|error| error.to_string())?;
+    let guests =
+        serde_json::to_string(&guest_personas(prompt_config)).map_err(|error| error.to_string())?;
     let mut replacements = style_replacements(prompt_config);
     replacements.extend([
         ("hotspotTitle", hotspot.title.clone()),
@@ -735,7 +900,8 @@ fn generate_plan_with_openai_compatible(
         .first()
         .map(|choice| choice.message.content.clone())
         .ok_or_else(|| "模型没有返回内容".to_string())?;
-    let value: serde_json::Value = serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
+    let value: serde_json::Value =
+        serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
     let mut plan = generate_rule_based_plan(hotspot.clone(), prompt_config);
     if let Some(objective) = value.get("objective").and_then(|item| item.as_str()) {
         plan.objective = objective.to_string();
@@ -778,9 +944,47 @@ fn generate_episode_draft(
     let prompt_config = get_or_seed_prompt_config(Some(&app))?;
     if let Some(settings) = settings {
         if settings.provider_id == "openai" || settings.provider_id == "deepseek" {
-            if let Some(api_key) = settings.api_key.clone().filter(|key| !key.trim().is_empty()) {
-                if let Some(model) = settings.selected_model.clone().filter(|model| !model.trim().is_empty()) {
-                    return generate_draft_with_openai_compatible(&plan, &hotspot, &settings.base_url, &api_key, &model, &prompt_config)
+            if let Some(api_key) = settings
+                .api_key
+                .clone()
+                .filter(|key| !key.trim().is_empty())
+            {
+                if let Some(model) = settings
+                    .selected_model
+                    .clone()
+                    .filter(|model| !model.trim().is_empty())
+                {
+                    let mode = settings
+                        .draft_generation_mode
+                        .as_deref()
+                        .unwrap_or("single");
+                    let started_at = Instant::now();
+                    let result = if mode == "multi_agent" {
+                        println!("[AI timing] generate_multi_agent_draft start");
+                        generate_multi_agent_draft_with_openai_compatible(
+                            &plan,
+                            &hotspot,
+                            &settings.base_url,
+                            &api_key,
+                            &model,
+                            &prompt_config,
+                        )
+                    } else {
+                        println!("[AI timing] generate_single_draft start");
+                        generate_draft_with_openai_compatible(
+                            &plan,
+                            &hotspot,
+                            &settings.base_url,
+                            &api_key,
+                            &model,
+                            &prompt_config,
+                        )
+                    };
+                    println!(
+                        "[AI timing] generate_episode_draft backend {}ms",
+                        started_at.elapsed().as_millis()
+                    );
+                    return result
                         .or_else(|_| Ok(generate_rule_based_draft(plan, hotspot, &prompt_config)));
                 }
             }
@@ -790,7 +994,11 @@ fn generate_episode_draft(
     Ok(generate_rule_based_draft(plan, hotspot, &prompt_config))
 }
 
-fn generate_rule_based_draft(plan: RoundtablePlan, hotspot: HotspotCandidate, prompt_config: &LlmPromptConfig) -> EpisodeDraft {
+fn generate_rule_based_draft(
+    plan: RoundtablePlan,
+    hotspot: HotspotCandidate,
+    prompt_config: &LlmPromptConfig,
+) -> EpisodeDraft {
     let current_time = now();
     let source_names = hotspot
         .sources
@@ -860,7 +1068,8 @@ fn generate_draft_with_openai_compatible(
         .map_err(|error| error.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let plan_json = serde_json::to_string(plan).map_err(|error| error.to_string())?;
-    let sources_json = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
+    let sources_json =
+        serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
     let guests_json = serde_json::to_string(&plan.guests).map_err(|error| error.to_string())?;
     let mut replacements = style_replacements(prompt_config);
     replacements.extend([
@@ -894,7 +1103,8 @@ fn generate_draft_with_openai_compatible(
         .first()
         .map(|choice| choice.message.content.clone())
         .ok_or_else(|| "模型没有返回内容".to_string())?;
-    let value: serde_json::Value = serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
+    let value: serde_json::Value =
+        serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
     let mut draft = generate_rule_based_draft(plan.clone(), hotspot.clone(), prompt_config);
     if let Some(title) = value.get("title").and_then(|item| item.as_str()) {
         draft.title = title.to_string();
@@ -912,6 +1122,142 @@ fn generate_draft_with_openai_compatible(
         draft.fact_checks = fact_checks;
     }
     Ok(draft)
+}
+
+fn generate_multi_agent_draft_with_openai_compatible(
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    prompt_config: &LlmPromptConfig,
+) -> Result<EpisodeDraft, String> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(90))
+        .user_agent("APD AI Roundtable Workbench/0.1")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let plan_json = serde_json::to_string(plan).map_err(|error| error.to_string())?;
+    let sources_json =
+        serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
+    let guests_json = serde_json::to_string(&plan.guests).map_err(|error| error.to_string())?;
+
+    let mut planner_replacements = style_replacements(prompt_config);
+    planner_replacements.extend([
+        ("hotspotTitle", hotspot.title.clone()),
+        ("hotspotSummary", hotspot.summary.clone()),
+        ("planJson", plan_json.clone()),
+        ("sourcesJson", sources_json.clone()),
+        ("guestPersonasJson", guests_json),
+    ]);
+    let planner_prompt = render_template(
+        &prompt_config.tasks.draft_turn_planner.user_template,
+        &planner_replacements,
+    );
+    let planner_started_at = Instant::now();
+    let planner_value = openai_chat_json(
+        &client,
+        &url,
+        api_key,
+        model,
+        &prompt_config.tasks.draft_turn_planner.system_prompt,
+        planner_prompt,
+        prompt_config.tasks.draft_turn_planner.temperature,
+        &prompt_config.schemas.turn_plan,
+    )?;
+    println!(
+        "[AI timing] draft_turn_planner {}ms",
+        planner_started_at.elapsed().as_millis()
+    );
+    let turn_plan: TurnPlanResponse =
+        serde_json::from_value(planner_value).map_err(|error| error.to_string())?;
+    if turn_plan.turns.len() < 8 {
+        return Err("中控 agent 返回的对话轮次少于 8 轮".into());
+    }
+
+    let mut dialogue = Vec::new();
+    for (index, turn) in turn_plan.turns.into_iter().take(16).enumerate() {
+        let speaker = plan
+            .guests
+            .iter()
+            .find(|guest| guest.id == turn.speaker_id)
+            .or_else(|| plan.guests.first())
+            .ok_or_else(|| "圆桌计划没有可用嘉宾".to_string())?;
+        let speaker_json = serde_json::to_string(speaker).map_err(|error| error.to_string())?;
+        let transcript = render_transcript(&dialogue, &plan.guests);
+        let mut turn_replacements = style_replacements(prompt_config);
+        turn_replacements.extend([
+            ("hotspotTitle", hotspot.title.clone()),
+            ("hotspotSummary", hotspot.summary.clone()),
+            ("sourcesJson", sources_json.clone()),
+            ("planJson", plan_json.clone()),
+            ("speakerPersonaJson", speaker_json),
+            ("turnInstruction", turn.instruction.clone()),
+            (
+                "transcript",
+                if transcript.is_empty() {
+                    "（暂无，当前是开场轮）".into()
+                } else {
+                    transcript
+                },
+            ),
+        ]);
+        let turn_prompt = render_template(
+            &prompt_config.tasks.draft_guest_turn.user_template,
+            &turn_replacements,
+        );
+        let turn_started_at = Instant::now();
+        let turn_value = openai_chat_json(
+            &client,
+            &url,
+            api_key,
+            model,
+            &prompt_config.tasks.draft_guest_turn.system_prompt,
+            turn_prompt,
+            prompt_config.tasks.draft_guest_turn.temperature,
+            &prompt_config.schemas.guest_turn,
+        )?;
+        println!(
+            "[AI timing] draft_guest_turn {} {}ms",
+            index + 1,
+            turn_started_at.elapsed().as_millis()
+        );
+        let guest_turn: GuestTurnResponse =
+            serde_json::from_value(turn_value).map_err(|error| error.to_string())?;
+        let text = guest_turn.text.trim().to_string();
+        if text.is_empty() {
+            return Err(format!("第 {} 轮嘉宾发言为空", index + 1));
+        }
+        dialogue.push(DialogueTurn {
+            speaker_id: turn.speaker_id,
+            intent: turn.intent,
+            text,
+        });
+    }
+
+    let mut draft = generate_rule_based_draft(plan.clone(), hotspot.clone(), prompt_config);
+    draft.title = turn_plan.title;
+    draft.summary = turn_plan.summary;
+    draft.dialogue = dialogue;
+    draft.takeaways = turn_plan.takeaways;
+    draft.fact_checks = turn_plan.fact_checks;
+    Ok(draft)
+}
+
+fn render_transcript(dialogue: &[DialogueTurn], guests: &[GuestPersona]) -> String {
+    dialogue
+        .iter()
+        .map(|turn| {
+            let label = guests
+                .iter()
+                .find(|guest| guest.id == turn.speaker_id)
+                .map(|guest| guest.label.as_str())
+                .unwrap_or(turn.speaker_id.as_str());
+            format!("{label}（{}）：{}", turn.intent, turn.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn parse_dialogue(value: &serde_json::Value) -> Option<Vec<DialogueTurn>> {
@@ -935,7 +1281,9 @@ fn parse_dialogue(value: &serde_json::Value) -> Option<Vec<DialogueTurn>> {
 
 #[tauri::command]
 fn save_episode_draft(app: tauri::AppHandle, draft: EpisodeDraft) -> Result<String, String> {
-    let path = data_dir(&app)?.join("drafts").join(format!("{}.json", draft.id));
+    let path = data_dir(&app)?
+        .join("drafts")
+        .join(format!("{}.json", draft.id));
     write_json(path.clone(), &draft)?;
     Ok(path.to_string_lossy().to_string())
 }
@@ -1023,7 +1371,10 @@ fn get_provider_settings(app: tauri::AppHandle) -> Result<Vec<ProviderSettings>,
 }
 
 #[tauri::command]
-fn save_provider_settings(app: tauri::AppHandle, settings: ProviderSettings) -> Result<Vec<ProviderSettings>, String> {
+fn save_provider_settings(
+    app: tauri::AppHandle,
+    settings: ProviderSettings,
+) -> Result<Vec<ProviderSettings>, String> {
     let path = provider_settings_path(&app)?;
     let mut all_settings: Vec<ProviderSettings> = if path.exists() {
         read_json(path.clone())?
@@ -1041,7 +1392,10 @@ fn save_provider_settings(app: tauri::AppHandle, settings: ProviderSettings) -> 
 fn refresh_model_catalog(settings: ProviderSettings) -> Result<Vec<ModelProvider>, String> {
     let mut catalog = get_model_catalog();
     let models = fetch_provider_models(&settings)?;
-    if let Some(provider) = catalog.iter_mut().find(|provider| provider.id == settings.provider_id) {
+    if let Some(provider) = catalog
+        .iter_mut()
+        .find(|provider| provider.id == settings.provider_id)
+    {
         provider.base_url = settings.base_url;
         if !models.is_empty() {
             provider.models = models;
@@ -1058,6 +1412,7 @@ fn default_provider_settings() -> Vec<ProviderSettings> {
             base_url: provider.base_url,
             api_key: None,
             selected_model: provider.models.first().cloned(),
+            draft_generation_mode: Some("single".into()),
         })
         .collect()
 }
@@ -1095,7 +1450,10 @@ fn fetch_provider_models(settings: &ProviderSettings) -> Result<Vec<String>, Str
         "anthropic" => {
             let url = format!("{}/v1/models", settings.base_url.trim_end_matches('/'));
             let mut headers = HeaderMap::new();
-            headers.insert("x-api-key", HeaderValue::from_str(&api_key).map_err(|error| error.to_string())?);
+            headers.insert(
+                "x-api-key",
+                HeaderValue::from_str(&api_key).map_err(|error| error.to_string())?,
+            );
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             let response: AnthropicModelList = client
                 .get(url)
@@ -1108,7 +1466,11 @@ fn fetch_provider_models(settings: &ProviderSettings) -> Result<Vec<String>, Str
             Ok(response.data.into_iter().map(|model| model.id).collect())
         }
         "google" => {
-            let url = format!("{}/v1beta/models?key={}", settings.base_url.trim_end_matches('/'), api_key);
+            let url = format!(
+                "{}/v1beta/models?key={}",
+                settings.base_url.trim_end_matches('/'),
+                api_key
+            );
             let response: GeminiModelList = client
                 .get(url)
                 .send()

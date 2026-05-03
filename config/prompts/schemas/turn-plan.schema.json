@@ -1,0 +1,46 @@
+{
+  "name": "roundtable_turn_plan",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["title", "summary", "turns", "takeaways", "factChecks"],
+    "properties": {
+      "title": { "type": "string" },
+      "summary": { "type": "string" },
+      "turns": {
+        "type": "array",
+        "minItems": 8,
+        "maxItems": 16,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["speakerId", "intent", "instruction"],
+          "properties": {
+            "speakerId": {
+              "type": "string",
+              "enum": ["host", "participant", "investor", "expert"]
+            },
+            "intent": {
+              "type": "string",
+              "enum": ["open", "context", "intuition", "business", "technical", "challenge", "followup", "transition", "summary"]
+            },
+            "instruction": { "type": "string" }
+          }
+        }
+      },
+      "takeaways": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 5,
+        "items": { "type": "string" }
+      },
+      "factChecks": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 5,
+        "items": { "type": "string" }
+      }
+    }
+  }
+}
