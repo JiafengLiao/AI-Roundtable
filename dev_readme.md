@@ -80,10 +80,15 @@ config\llm-prompts.json
 
 It includes:
 
-- Guest personas
-- Plan generation system/user prompt
-- Draft generation system/user prompt
-- Rule-based fallback agenda, tension points, source risks, takeaways, and fact checks
+- `personas`: guest personas
+- `styleGuide`: conversation tone, safety rules, and relaxed roundtable style guidance
+- `tasks.plan`: plan generation system/user prompt and temperature
+- `tasks.draft`: draft generation system/user prompt and temperature
+- `schemas.plan`: JSON Schema for constrained plan output
+- `schemas.draft`: JSON Schema for constrained draft output
+- `fallbacks`: rule-based fallback agenda, tension points, source risks, takeaways, and fact checks
+
+OpenAI-compatible generation sends the configured schema as `response_format: { type: "json_schema" }` when generating plans and drafts. Models that support constrained JSON output will follow the schema; if the API rejects the schema or output parsing fails, the app falls back to the local rule-based generator.
 
 On first run, the app seeds a writable copy into the Tauri app data directory:
 

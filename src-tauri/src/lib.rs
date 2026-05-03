@@ -147,26 +147,64 @@ struct ProviderSettings {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct LlmPromptConfig {
-    #[serde(rename = "guestPersonas")]
-    guest_personas: Vec<GuestPersona>,
-    #[serde(rename = "planSystemPrompt")]
-    plan_system_prompt: String,
-    #[serde(rename = "planUserTemplate")]
-    plan_user_template: String,
-    #[serde(rename = "draftSystemPrompt")]
-    draft_system_prompt: String,
-    #[serde(rename = "draftUserTemplate")]
-    draft_user_template: String,
-    #[serde(rename = "fallbackAgenda")]
-    fallback_agenda: Vec<String>,
-    #[serde(rename = "fallbackTensionPoints")]
-    fallback_tension_points: Vec<String>,
-    #[serde(rename = "fallbackSourceRisks")]
-    fallback_source_risks: Vec<String>,
-    #[serde(rename = "fallbackTakeaways")]
-    fallback_takeaways: Vec<String>,
-    #[serde(rename = "fallbackFactChecks")]
-    fallback_fact_checks: Vec<String>,
+    version: Option<u16>,
+    personas: serde_json::Map<String, serde_json::Value>,
+    #[serde(rename = "styleGuide")]
+    style_guide: StyleGuide,
+    tasks: PromptTasks,
+    schemas: PromptSchemas,
+    fallbacks: PromptFallbacks,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct StyleGuide {
+    #[serde(rename = "conversationGoal")]
+    conversation_goal: String,
+    tone: Vec<String>,
+    #[serde(rename = "conversationDevices")]
+    conversation_devices: Vec<String>,
+    #[serde(rename = "safetyRules")]
+    safety_rules: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PromptTasks {
+    plan: PromptTask,
+    draft: PromptTask,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PromptTask {
+    #[serde(rename = "systemPrompt")]
+    system_prompt: String,
+    #[serde(rename = "userTemplate")]
+    user_template: String,
+    temperature: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PromptSchemas {
+    plan: JsonSchemaSpec,
+    draft: JsonSchemaSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct JsonSchemaSpec {
+    name: String,
+    strict: bool,
+    schema: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PromptFallbacks {
+    agenda: Vec<String>,
+    #[serde(rename = "tensionPoints")]
+    tension_points: Vec<String>,
+    #[serde(rename = "sourceRisks")]
+    source_risks: Vec<String>,
+    takeaways: Vec<String>,
+    #[serde(rename = "factChecks")]
+    fact_checks: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,7 +425,11 @@ fn get_or_seed_prompt_config(app: Option<&tauri::AppHandle>) -> Result<LlmPrompt
     if let Some(app) = app {
         let path = prompt_config_path(app)?;
         if path.exists() {
-            read_json(path)
+            read_json(path.clone()).or_else(|_| {
+                let config = bundled_prompt_config()?;
+                write_json(path, &config)?;
+                Ok(config)
+            })
         } else {
             let config = bundled_prompt_config()?;
             write_json(path, &config)?;
@@ -404,6 +446,37 @@ fn render_template(template: &str, replacements: &[(&str, String)]) -> String {
         rendered = rendered.replace(&format!("{{{{{key}}}}}"), value);
     }
     rendered
+}
+
+fn guest_personas(prompt_config: &LlmPromptConfig) -> Vec<GuestPersona> {
+    ["host", "participant", "investor", "expert"]
+        .iter()
+        .filter_map(|id| prompt_config.personas.get(*id))
+        .filter_map(|value| serde_json::from_value::<GuestPersona>(value.clone()).ok())
+        .collect()
+}
+
+fn style_replacements(prompt_config: &LlmPromptConfig) -> Vec<(&'static str, String)> {
+    vec![
+        ("conversationGoal", prompt_config.style_guide.conversation_goal.clone()),
+        ("toneRules", prompt_config.style_guide.tone.join("\n- ")),
+        (
+            "conversationDevices",
+            prompt_config.style_guide.conversation_devices.join("\n- "),
+        ),
+        ("safetyRules", prompt_config.style_guide.safety_rules.join("\n- ")),
+    ]
+}
+
+fn response_format(schema: &JsonSchemaSpec) -> serde_json::Value {
+    json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema.name,
+            "strict": schema.strict,
+            "schema": schema.schema
+        }
+    })
 }
 
 fn get_or_seed_feeds(app: &tauri::AppHandle) -> Result<Vec<FeedSource>, String> {
@@ -589,13 +662,14 @@ fn generate_rule_based_plan(hotspot: HotspotCandidate, prompt_config: &LlmPrompt
         hotspot_id: hotspot.id,
         objective: format!("围绕「{}」建立事实背景、行业直觉、商业判断和技术判断。", hotspot.title),
         audience_promise: "让 AI 从业者快速判断这个热点是否值得投入产品、研发或投资注意力。".into(),
-        guests: prompt_config.guest_personas.clone(),
+        guests: guest_personas(prompt_config),
         agenda: prompt_config
-            .fallback_agenda
+            .fallbacks
+            .agenda
             .iter()
             .map(|item| render_template(item, &[("signals", signals.clone())]))
             .collect(),
-        tension_points: prompt_config.fallback_tension_points.clone(),
+        tension_points: prompt_config.fallbacks.tension_points.clone(),
         speaking_order: vec![
             "host".into(),
             "participant".into(),
@@ -604,7 +678,8 @@ fn generate_rule_based_plan(hotspot: HotspotCandidate, prompt_config: &LlmPrompt
             "host".into(),
         ],
         source_risks: prompt_config
-            .fallback_source_risks
+            .fallbacks
+            .source_risks
             .iter()
             .map(|item| render_template(item, &[("sourceCount", hotspot.source_count.to_string())]))
             .collect(),
@@ -625,24 +700,24 @@ fn generate_plan_with_openai_compatible(
         .map_err(|error| error.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let sources = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
-    let guests = serde_json::to_string(&prompt_config.guest_personas).map_err(|error| error.to_string())?;
-    let prompt = render_template(
-        &prompt_config.plan_user_template,
-        &[
-            ("hotspotTitle", hotspot.title.clone()),
-            ("hotspotSummary", hotspot.summary.clone()),
-            ("sourcesJson", sources),
-            ("guestPersonasJson", guests),
-        ],
-    );
+    let guests = serde_json::to_string(&guest_personas(prompt_config)).map_err(|error| error.to_string())?;
+    let mut replacements = style_replacements(prompt_config);
+    replacements.extend([
+        ("hotspotTitle", hotspot.title.clone()),
+        ("hotspotSummary", hotspot.summary.clone()),
+        ("sourcesJson", sources),
+        ("guestPersonasJson", guests),
+    ]);
+    let prompt = render_template(&prompt_config.tasks.plan.user_template, &replacements);
 
     let body = json!({
         "model": model,
         "messages": [
-            {"role": "system", "content": prompt_config.plan_system_prompt},
+            {"role": "system", "content": prompt_config.tasks.plan.system_prompt},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.4
+        "temperature": prompt_config.tasks.plan.temperature,
+        "response_format": response_format(&prompt_config.schemas.plan)
     });
 
     let response: ChatCompletionResponse = client
@@ -763,8 +838,8 @@ fn generate_rule_based_draft(plan: RoundtablePlan, hotspot: HotspotCandidate, pr
                 text: format!("所以这期先给一个保守判断：它值得关注，但结论要继续回到来源和证据。当前主要来源包括：{}。", source_names),
             },
         ],
-        takeaways: prompt_config.fallback_takeaways.clone(),
-        fact_checks: prompt_config.fallback_fact_checks.clone(),
+        takeaways: prompt_config.fallbacks.takeaways.clone(),
+        fact_checks: prompt_config.fallbacks.fact_checks.clone(),
         created_at: current_time.clone(),
         updated_at: current_time,
     }
@@ -787,23 +862,23 @@ fn generate_draft_with_openai_compatible(
     let plan_json = serde_json::to_string(plan).map_err(|error| error.to_string())?;
     let sources_json = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
     let guests_json = serde_json::to_string(&plan.guests).map_err(|error| error.to_string())?;
-    let prompt = render_template(
-        &prompt_config.draft_user_template,
-        &[
-            ("hotspotTitle", hotspot.title.clone()),
-            ("hotspotSummary", hotspot.summary.clone()),
-            ("planJson", plan_json),
-            ("sourcesJson", sources_json),
-            ("guestPersonasJson", guests_json),
-        ],
-    );
+    let mut replacements = style_replacements(prompt_config);
+    replacements.extend([
+        ("hotspotTitle", hotspot.title.clone()),
+        ("hotspotSummary", hotspot.summary.clone()),
+        ("planJson", plan_json),
+        ("sourcesJson", sources_json),
+        ("guestPersonasJson", guests_json),
+    ]);
+    let prompt = render_template(&prompt_config.tasks.draft.user_template, &replacements);
     let body = json!({
         "model": model,
         "messages": [
-            {"role": "system", "content": prompt_config.draft_system_prompt},
+            {"role": "system", "content": prompt_config.tasks.draft.system_prompt},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.5
+        "temperature": prompt_config.tasks.draft.temperature,
+        "response_format": response_format(&prompt_config.schemas.draft)
     });
     let response: ChatCompletionResponse = client
         .post(url)

@@ -1,63 +1,176 @@
 {
-  "guestPersonas": [
-    {
+  "version": 2,
+  "personas": {
+    "host": {
       "id": "host",
       "label": "主持人",
       "role": "扫盲、追问和总结",
-      "stance": "把复杂热点拆成事实、争议和行动判断。",
-      "speakingStyle": "短句清晰，节奏稳定。"
+      "stance": "把热点内容先解释清楚，并把复杂热点拆成事实、争议、行动判断和未来趋势展望。",
+      "speakingStyle": "短句清晰，节奏稳定，像一个懂技术的播客主持人。会用「我先把背景补一下」「这个点我想追问」这样的自然转场。"
     },
-    {
+    "participant": {
       "id": "participant",
-      "label": "热点参与者",
+      "label": "热点亲历者",
       "role": "提供一线 intuition 和行业 know-how。",
-      "stance": "关注真实工作流里的摩擦和机会。",
-      "speakingStyle": "有现场感，避免空泛评论。"
+      "stance": "作为热点的亲历者，从一线视角解释这些信号为什么重要，以及可能对未来产品和团队工作流产生什么影响。",
+      "speakingStyle": "有现场感，像在复盘真实项目经历。允许口语化表达，例如「我当时第一反应是」「这件事在一线其实挺微妙」。"
     },
-    {
+    "investor": {
       "id": "investor",
       "label": "投资人",
-      "role": "分析商业化、竞争格局和资本效率。",
-      "stance": "看重付费意愿、预算归属和壁垒。",
-      "speakingStyle": "结构化、谨慎、偏判断。"
+      "role": "分析商业化、竞争格局和资本效率，用咨询公司的结构化视角分析现状和未来趋势。",
+      "stance": "看重付费意愿、预算归属、竞争壁垒和资本效率。",
+      "speakingStyle": "结构化、谨慎、偏判断，但不要像研报。可以先给结论，再解释背后的商业假设。"
     },
-    {
+    "expert": {
       "id": "expert",
       "label": "技术专家",
-      "role": "分析模型、工程、数据和安全风险。",
-      "stance": "看重可验证性、稳定性和失败恢复。",
-      "speakingStyle": "准确但不论文腔。"
+      "role": "分析相关技术、未来技术路径、模型、工程、数据和安全风险。",
+      "stance": "看重可验证性、稳定性、工程成本和失败恢复。",
+      "speakingStyle": "技术准确但不论文腔。允许用工程师口吻解释权衡，例如「这不是不能做，而是要看系统边界」。"
     }
-  ],
-  "planSystemPrompt": "你是一个资深 AI 媒体编辑和中控 agent。你只输出可解析 JSON，不要 markdown。不要声称模拟嘉宾是真实采访对象。",
-  "planUserTemplate": "请根据热点和来源生成中文 AI 圆桌计划。只输出 JSON，不要 markdown。JSON 字段必须包含 objective, audiencePromise, agenda, tensionPoints, sourceRisks。agenda 是 4-6 个字符串，tensionPoints 是 2-4 个字符串，sourceRisks 是 1-3 个字符串。\n热点标题：{{hotspotTitle}}\n摘要：{{hotspotSummary}}\n来源：{{sourcesJson}}\n角色人设：{{guestPersonasJson}}",
-  "draftSystemPrompt": "你是一个资深 AI 媒体编辑和圆桌脚本制作人。你只输出可解析 JSON。不要声称模拟嘉宾是真实采访对象。",
-  "draftUserTemplate": "请根据圆桌计划、角色人设和来源生成中文圆桌稿。只输出 JSON，不要 markdown。字段必须包含 title, summary, dialogue, takeaways, factChecks。dialogue 每项包含 speakerId(host/participant/investor/expert), intent(open/context/intuition/business/technical/challenge/summary), text。\n热点：{{hotspotTitle}}\n摘要：{{hotspotSummary}}\n计划：{{planJson}}\n来源：{{sourcesJson}}\n角色人设：{{guestPersonasJson}}",
-  "fallbackAgenda": [
-    "主持人用 2 分钟解释热点本身和来源可信度。",
-    "热点参与者从一线工作流解释为什么这些信号重要：{{signals}}。",
-    "技术专家判断模型、工程、数据、安全和可验证性。",
-    "投资人判断商业化路径、竞争壁垒和资本效率。",
-    "主持人收束成 3 条本周可行动判断。"
-  ],
-  "fallbackTensionPoints": [
-    "发布方叙事和真实落地效果之间可能存在差距。",
-    "技术可行性不等于用户愿意付费。",
-    "来源材料不足时，需要避免编造具体数字或承诺。"
-  ],
-  "fallbackSourceRisks": [
-    "当前来源数量：{{sourceCount}}。少于 2 个来源时建议人工补充交叉验证。",
-    "不要把模拟角色写成真实采访对象。"
-  ],
-  "fallbackTakeaways": [
-    "先区分事实、发布方叙事和我们的判断。",
-    "技术判断重点看可复现性、失败恢复和安全边界。",
-    "商业判断重点看真实付费岗位、预算和可持续壁垒。",
-    "来源不足时保守表达，并优先补充交叉来源。"
-  ],
-  "fallbackFactChecks": [
-    "逐条打开来源链接，确认标题、日期和关键事实。",
-    "删除来源中没有出现的数字、融资额、性能提升或公司承诺。",
-    "确认所有嘉宾都被标注为模拟角色。"
-  ]
+  },
+  "styleGuide": {
+    "conversationGoal": "最终稿件要像四个真实的人在一个轻松但专业的圆桌里聊天，不像四段独立评论，也不像 AI 总结稿。",
+    "tone": [
+      "中文为主，专业名词可以保留英文。",
+      "自然、松弛、有人味，但不油腻、不表演。",
+      "角色之间要有追问、接话、轻微分歧和补充。",
+      "每个发言 80 到 180 字为主，少数总结可以更短。",
+      "避免每轮都用「首先、其次、最后」。",
+      "避免四个角色重复同一观点。"
+    ],
+    "conversationDevices": [
+      "主持人要适时打断并翻译术语。",
+      "热点亲历者多讲行业直觉和现场判断。",
+      "投资人可以提出商业假设或质疑。",
+      "技术专家要把技术边界讲成人话。",
+      "允许出现自然承接句，例如「我接一下这个点」「这里我稍微不同意」「这个判断要分两层看」。"
+    ],
+    "safetyRules": [
+      "不要声称模拟嘉宾是真实采访对象。",
+      "不要编造来源中没有的数字、融资额、发布日期、性能提升或公司承诺。",
+      "来源不足时使用保守表达。",
+      "如果判断来自推理而不是来源，要用「我的判断是」「更像是」等表达。"
+    ]
+  },
+  "tasks": {
+    "plan": {
+      "systemPrompt": "你是一个资深 AI 媒体编辑和中控 agent。你只输出可解析 JSON，不要 markdown。你的任务是设计一场自然、有冲突、有信息密度的中文 AI 圆桌。",
+      "userTemplate": "请根据热点和来源生成中文 AI 圆桌计划。\n\n目标：{{conversationGoal}}\n\n风格要求：{{toneRules}}\n\n对话技巧：{{conversationDevices}}\n\n事实约束：{{safetyRules}}\n\n热点标题：{{hotspotTitle}}\n摘要：{{hotspotSummary}}\n来源：{{sourcesJson}}\n角色人设：{{guestPersonasJson}}\n\n只输出符合 schema 的 JSON。",
+      "temperature": 0.45
+    },
+    "draft": {
+      "systemPrompt": "你是一个资深 AI 圆桌播客脚本制作人。你只输出可解析 JSON，不要 markdown。你要写出真实人在一起聊天的感觉：自然接话、有追问、有一点分歧，但内容必须专业、可信、受来源约束。",
+      "userTemplate": "请根据圆桌计划、角色人设和来源生成中文圆桌稿。\n\n最终稿件目标：{{conversationGoal}}\n\n风格要求：{{toneRules}}\n\n对话技巧：{{conversationDevices}}\n\n事实约束：{{safetyRules}}\n\n热点：{{hotspotTitle}}\n摘要：{{hotspotSummary}}\n计划：{{planJson}}\n来源：{{sourcesJson}}\n角色人设：{{guestPersonasJson}}\n\n写作要求：\n- dialogue 要像真实聊天，不要像四段报告。\n- 至少包含 8 轮对话。\n- 主持人要负责扫盲、追问、转场和总结。\n- 热点亲历者要提供一线 intuition 和行业 know-how。\n- 投资人要给商业视角，也可以质疑。\n- 技术专家要解释技术路径、工程难点和风险。\n- 可以有自然承接语，但不要加无意义寒暄。\n\n只输出符合 schema 的 JSON。",
+      "temperature": 0.65
+    }
+  },
+  "schemas": {
+    "plan": {
+      "name": "roundtable_plan",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["objective", "audiencePromise", "agenda", "tensionPoints", "sourceRisks"],
+        "properties": {
+          "objective": { "type": "string" },
+          "audiencePromise": { "type": "string" },
+          "agenda": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 6,
+            "items": { "type": "string" }
+          },
+          "tensionPoints": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4,
+            "items": { "type": "string" }
+          },
+          "sourceRisks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "draft": {
+      "name": "roundtable_draft",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "summary", "dialogue", "takeaways", "factChecks"],
+        "properties": {
+          "title": { "type": "string" },
+          "summary": { "type": "string" },
+          "dialogue": {
+            "type": "array",
+            "minItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["speakerId", "intent", "text"],
+              "properties": {
+                "speakerId": {
+                  "type": "string",
+                  "enum": ["host", "participant", "investor", "expert"]
+                },
+                "intent": {
+                  "type": "string",
+                  "enum": ["open", "context", "intuition", "business", "technical", "challenge", "summary"]
+                },
+                "text": { "type": "string" }
+              }
+            }
+          },
+          "takeaways": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 5,
+            "items": { "type": "string" }
+          },
+          "factChecks": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 5,
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "fallbacks": {
+    "agenda": [
+      "主持人用 2 分钟解释热点本身和来源可信度。",
+      "热点亲历者从一线工作流解释为什么这些信号重要：{{signals}}。",
+      "技术专家判断模型、工程、数据、安全和可验证性。",
+      "投资人判断商业化路径、竞争壁垒和资本效率。",
+      "主持人收束成 3 条本周可行动判断。"
+    ],
+    "tensionPoints": [
+      "发布方叙事和真实落地效果之间可能存在差距。",
+      "技术可行性不等于用户愿意付费。",
+      "来源材料不足时，需要避免编造具体数字或承诺。"
+    ],
+    "sourceRisks": [
+      "当前来源数量：{{sourceCount}}。少于 2 个来源时建议人工补充交叉验证。",
+      "不要把模拟角色写成真实采访对象。"
+    ],
+    "takeaways": [
+      "先区分事实、发布方叙事和我们的判断。",
+      "技术判断重点看可复现性、失败恢复和安全边界。",
+      "商业判断重点看真实付费岗位、预算和可持续壁垒。",
+      "来源不足时保守表达，并优先补充交叉来源。"
+    ],
+    "factChecks": [
+      "逐条打开来源链接，确认标题、日期和关键事实。",
+      "删除来源中没有出现的数字、融资额、性能提升或公司承诺。",
+      "确认所有嘉宾都被标注为模拟角色。"
+    ]
+  }
 }
