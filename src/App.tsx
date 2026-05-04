@@ -396,15 +396,37 @@ function App() {
   }
 
   async function saveSettings(settings: ProviderSettings) {
+    let settingsSaved = false;
     try {
-      setJob({ id: "job-settings-check", type: "save", status: "running", message: "正在检查模型连接" });
-      const connectionMessage = await validateProviderConnection(settings);
+      setJob({ id: "job-settings-save", type: "save", status: "running", message: "正在保存模型设置" });
       const saved = await saveProviderSettings(settings);
+      settingsSaved = true;
       setProviderSettings(saved);
-      setJob({ id: "job-settings", type: "save", status: "succeeded", message: `模型设置已保存：${connectionMessage}` });
+      setJob({ id: "job-settings-models", type: "save", status: "running", message: "设置已保存，正在更新模型列表" });
+      const catalog = await refreshModelCatalogFromBackend(settings);
+      const visibleCatalog = catalog.filter((item) => item.id !== "mock");
+      setModelCatalog(visibleCatalog);
+
+      const provider = visibleCatalog.find((item) => item.id === settings.providerId);
+      const refreshedModel =
+        provider?.models.find((model) => model === settings.selectedModel) ?? provider?.models[0] ?? settings.selectedModel ?? "";
+      setSelectedModel(refreshedModel);
+
+      const savedWithRefreshedModel = await saveProviderSettings({
+        ...settings,
+        selectedModel: refreshedModel
+      });
+      setProviderSettings(savedWithRefreshedModel);
+      setJob({
+        id: "job-settings",
+        type: "save",
+        status: "succeeded",
+        message: `模型设置已保存，模型列表已更新${provider ? `：${provider.models.length} 个模型` : ""}`
+      });
     } catch (error) {
-      setJob({ id: "job-settings", type: "save", status: "failed", message: formatError(error, "保存模型设置失败") });
-      showLlmSettingsPrompt(error, "模型设置未保存，因为连接检查失败。");
+      const fallback = settingsSaved ? "模型设置已保存，但更新模型列表失败" : "保存模型设置失败";
+      setJob({ id: "job-settings", type: "save", status: "failed", message: formatError(error, fallback) });
+      showLlmSettingsPrompt(error, `${fallback}。`);
     }
   }
 
@@ -1698,6 +1720,14 @@ function activityProgress(job: GenerationJob, mode: "single" | "multi_agent", el
       title: "正在调用后端",
       detail: elapsed < 6 ? "正在连接本地 Tauri 后端" : "正在抓取 RSS 并筛选候选热点",
       percent: Math.min(86, 20 + elapsed * 5)
+    };
+  }
+
+  if (job.id === "job-settings-models") {
+    return {
+      title: "正在更新模型信息",
+      detail: elapsed < 5 ? "正在向模型厂商读取可用模型" : "正在刷新模型下拉框和本地设置",
+      percent: Math.min(90, 30 + elapsed * 7)
     };
   }
 

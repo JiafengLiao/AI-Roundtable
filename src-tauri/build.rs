@@ -1,9 +1,21 @@
 fn main() {
     println!("cargo:rerun-if-changed=icons/icon.ico");
     println!("cargo:rerun-if-changed=icons/icon.icns");
+    println!("cargo:rerun-if-changed=icons/16x16.png");
+    println!("cargo:rerun-if-changed=icons/20x20.png");
+    println!("cargo:rerun-if-changed=icons/24x24.png");
+    println!("cargo:rerun-if-changed=icons/30x30.png");
     println!("cargo:rerun-if-changed=icons/32x32.png");
+    println!("cargo:rerun-if-changed=icons/36x36.png");
+    println!("cargo:rerun-if-changed=icons/40x40.png");
+    println!("cargo:rerun-if-changed=icons/44x44.png");
+    println!("cargo:rerun-if-changed=icons/48x48.png");
+    println!("cargo:rerun-if-changed=icons/64x64.png");
+    println!("cargo:rerun-if-changed=icons/96x96.png");
     println!("cargo:rerun-if-changed=icons/128x128.png");
+    println!("cargo:rerun-if-changed=icons/150x150.png");
     println!("cargo:rerun-if-changed=icons/128x128@2x.png");
+    println!("cargo:rerun-if-changed=icons/256x256.png");
     println!("cargo:rerun-if-changed=icons/512x512.png");
     println!("cargo:rerun-if-changed=icons/1024x1024.png");
     tauri_build::build();
