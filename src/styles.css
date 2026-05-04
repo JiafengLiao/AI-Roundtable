@@ -33,15 +33,19 @@ button {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   min-height: 100vh;
+  padding-bottom: 38px;
   background:
     linear-gradient(180deg, rgba(26, 40, 45, 0.72), rgba(8, 11, 15, 0.2) 38%),
     #080b0f;
 }
 
 .sidebar {
+  position: fixed;
+  inset: 0 auto 38px 0;
   display: flex;
   flex-direction: column;
   gap: 24px;
+  width: 248px;
   padding: 22px 16px;
   border-right: 1px solid rgba(151, 174, 180, 0.14);
   background: rgba(9, 13, 17, 0.86);
@@ -134,8 +138,9 @@ button {
 }
 
 .mainPanel {
+  grid-column: 2;
   min-width: 0;
-  padding: 22px;
+  padding: 22px 22px 54px;
 }
 
 .topbar,
@@ -178,10 +183,20 @@ button {
 }
 
 .topbarActions,
+.fetchControlBand,
 .buttonGroup {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.fetchControlBand {
+  align-items: center;
+  margin: 0 0 18px;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.12);
+  border-radius: 8px;
+  background: rgba(10, 15, 19, 0.66);
 }
 
 .dateRangeControl {
@@ -219,49 +234,47 @@ button {
 
 .switch {
   display: inline-grid;
-  grid-template-columns: 34px auto;
-  align-items: center;
-  gap: 8px;
-  min-height: 30px;
-  border: 1px solid rgba(151, 174, 180, 0.18);
+  place-items: center;
+  width: 46px;
+  height: 26px;
+  min-height: 26px;
+  border: 0;
   border-radius: 999px;
-  color: #a9b8bd;
-  background: rgba(18, 25, 30, 0.72);
-  padding: 3px 10px 3px 4px;
+  background: transparent;
+  padding: 0;
 }
 
 .switch span {
-  width: 26px;
-  height: 20px;
+  width: 44px;
+  height: 24px;
   border-radius: 999px;
-  background: #4a5860;
+  background: #3c484f;
   position: relative;
+  transition: background 0.16s ease;
 }
 
 .switch span::after {
   content: "";
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 14px;
-  height: 14px;
+  top: 4px;
+  left: 4px;
+  width: 16px;
+  height: 16px;
   border-radius: 999px;
-  background: #dbe5e9;
+  background: #edf7f8;
   transition: transform 0.16s ease;
 }
 
 .switch.isOn {
-  border-color: rgba(85, 240, 221, 0.38);
-  color: #cffff7;
-  background: rgba(17, 56, 58, 0.58);
+  background: transparent;
 }
 
 .switch.isOn span {
-  background: #1f8d83;
+  background: #20a093;
 }
 
 .switch.isOn span::after {
-  transform: translateX(6px);
+  transform: translateX(20px);
 }
 
 .ghostButton:disabled,
@@ -341,6 +354,34 @@ button {
   padding: 18px;
 }
 
+.appFooter {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 248px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 18px;
+  border-top: 1px solid rgba(151, 174, 180, 0.14);
+  color: #a9b8bd;
+  background: rgba(9, 13, 17, 0.96);
+  font-size: 12px;
+}
+
+.appFooter strong {
+  color: #dbe5e9;
+}
+
+.appFooter span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .inspector {
   position: sticky;
   top: 18px;
@@ -370,22 +411,26 @@ button {
 
 .sourceItem {
   display: grid;
-  gap: 4px;
+  grid-template-columns: minmax(140px, 0.4fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
   padding: 12px;
   border: 1px solid rgba(151, 174, 180, 0.13);
   border-radius: 8px;
   color: #d8e7ea;
-  background: rgba(17, 24, 30, 0.72);
-}
-
-.sourceItem a {
-  color: #55f0dd;
-  font-size: 13px;
-  text-decoration: none;
+  background: rgba(17, 24, 30, 0.48);
 }
 
 .sourceItem small {
   color: #8ea0a7;
+}
+
+.sourceItem strong {
+  color: #edf7f8;
+}
+
+.sourceItem .linkButton {
+  justify-self: end;
 }
 
 .sourceList span,
@@ -445,17 +490,56 @@ button {
 }
 
 .hotspotCard {
+  position: relative;
   display: grid;
   gap: 10px;
-  min-height: 250px;
+  align-content: start;
+  min-height: 230px;
   padding: 15px;
   color: inherit;
   text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
 }
 
 .hotspotCard.selected {
-  border-color: rgba(85, 240, 221, 0.52);
-  background: rgba(17, 56, 58, 0.58);
+  border-color: rgba(85, 240, 221, 0.68);
+  background: rgba(21, 74, 72, 0.48);
+  box-shadow: inset 3px 0 0 #55f0dd;
+}
+
+.hotspotMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #8ea0a7;
+  padding-right: 76px;
+  font-size: 13px;
+}
+
+.hotspotMeta .sourceName {
+  color: #edf7f8;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.selectionBadge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid rgba(151, 174, 180, 0.16);
+  border-radius: 999px;
+  color: #8ea0a7;
+  background: rgba(8, 12, 15, 0.78);
+  font-size: 12px;
+}
+
+.selectionBadge.isSelected {
+  border-color: rgba(85, 240, 221, 0.48);
+  color: #cffff7;
+  background: rgba(24, 93, 88, 0.78);
 }
 
 .hotspotCard h3,
@@ -466,6 +550,7 @@ button {
 
 .hotspotCard p {
   margin: 0;
+  color: #c8d5d9;
 }
 
 .score,
@@ -495,6 +580,21 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  margin-top: auto;
+}
+
+.textOpenButton {
+  display: block;
+  width: 100%;
+  border: 0;
+  color: #edf7f8;
+  text-align: left;
+  background: transparent;
+  padding: 0;
+}
+
+.textOpenButton:hover h3 {
+  color: #55f0dd;
 }
 
 .dataTable,
@@ -581,14 +681,37 @@ button {
   color: #c8d5d9;
 }
 
+.filterPanel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.12);
+  border-radius: 8px;
+  background: rgba(10, 15, 19, 0.46);
+}
+
+.filterPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.filterPanelHeader strong,
+.filterPanelHeader span {
+  display: block;
+}
+
+.filterPanelHeader span {
+  margin-top: 3px;
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
 .filterBar {
   display: grid;
   grid-template-columns: repeat(5, minmax(120px, 1fr));
   gap: 10px;
-  padding: 12px;
-  border: 1px solid rgba(151, 174, 180, 0.13);
-  border-radius: 8px;
-  background: rgba(17, 24, 30, 0.72);
 }
 
 .filterBar label {
@@ -601,6 +724,8 @@ button {
 .formPanel input,
 .formPanel textarea,
 .formPanel select,
+.customFeedForm input,
+.customFeedForm select,
 .filterBar input,
 .filterBar select {
   width: 100%;
@@ -609,6 +734,146 @@ button {
   color: #edf7f8;
   background: #0d1418;
   padding: 11px 12px;
+}
+
+.feedAddPanel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgba(151, 174, 180, 0.12);
+  border-radius: 8px;
+  background: rgba(10, 15, 19, 0.52);
+}
+
+.feedPanelHeading h3,
+.feedPanelHeading span {
+  margin: 0;
+}
+
+.feedPanelHeading span {
+  display: block;
+  margin-top: 4px;
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
+.presetFeedGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.feedPresetToolbar {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.segmentedTabs {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid rgba(151, 174, 180, 0.13);
+  border-radius: 8px;
+  background: rgba(8, 12, 15, 0.64);
+}
+
+.segmentedTabs button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  color: #8ea0a7;
+  background: transparent;
+  padding: 0 10px;
+}
+
+.segmentedTabs button.active {
+  color: #061312;
+  background: #55f0dd;
+}
+
+.feedSearchInput {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(151, 174, 180, 0.18);
+  border-radius: 8px;
+  color: #edf7f8;
+  background: #0d1418;
+  padding: 0 12px;
+}
+
+.presetEmpty {
+  grid-column: 1 / -1;
+  min-height: 82px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(151, 174, 180, 0.2);
+  border-radius: 8px;
+  color: #8ea0a7;
+  background: rgba(17, 24, 30, 0.32);
+}
+
+.presetFeed {
+  display: grid;
+  gap: 8px;
+  min-height: 82px;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.13);
+  border-radius: 8px;
+  color: #e8eef2;
+  text-align: left;
+  background: rgba(17, 24, 30, 0.52);
+}
+
+.presetFeed:hover:not(:disabled) {
+  border-color: rgba(85, 240, 221, 0.36);
+  background: rgba(17, 56, 58, 0.28);
+}
+
+.presetFeed:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.presetFeedTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.presetFeedTop span {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #cffff7;
+  background: rgba(24, 93, 88, 0.66);
+  font-size: 12px;
+}
+
+.presetFeed small {
+  color: #8ea0a7;
+  overflow-wrap: anywhere;
+}
+
+.customFeedForm {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(151, 174, 180, 0.12);
+  border-radius: 8px;
+  background: rgba(17, 24, 30, 0.48);
+}
+
+.customFeedForm label {
+  display: grid;
+  gap: 7px;
+  color: #c8d5d9;
+  font-size: 13px;
 }
 
 .planColumns > div,
@@ -673,6 +938,22 @@ button {
   gap: 14px;
 }
 
+.historyTable .tableHeader,
+.historyTable .historyRow {
+  grid-template-columns: minmax(260px, 2fr) minmax(150px, 1fr) minmax(150px, 1fr) minmax(160px, 1fr) 80px;
+}
+
+.historyRow {
+  width: 100%;
+  color: inherit;
+  text-align: left;
+}
+
+.historyRow:hover {
+  border-color: rgba(85, 240, 221, 0.34);
+  background: rgba(17, 56, 58, 0.32);
+}
+
 .historyList {
   display: grid;
   gap: 8px;
@@ -700,6 +981,196 @@ button {
   min-width: 0;
 }
 
+.historySources {
+  display: grid;
+  gap: 10px;
+}
+
+.historySources h3 {
+  margin: 0;
+}
+
+.detailHeader {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(151, 174, 180, 0.12);
+}
+
+.backButton {
+  align-self: start;
+  justify-self: start;
+  border-color: rgba(85, 240, 221, 0.24);
+  color: #cffff7;
+  background: rgba(17, 56, 58, 0.26);
+}
+
+.backButton span {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.detailTitleBlock {
+  display: grid;
+  gap: 6px;
+}
+
+.detailTitleBlock h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.detailTitleBlock .sectionMeta {
+  margin: 0;
+}
+
+.detailActionGroup {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: 10px;
+}
+
+.editButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(151, 174, 180, 0.16);
+  border-radius: 8px;
+  color: #dbe5e9;
+  background: #101820;
+}
+
+.editButton:hover {
+  border-color: rgba(85, 240, 221, 0.28);
+  background: #142027;
+}
+
+.detailTitleInput,
+.detailSummaryInput,
+.turnEditInput {
+  width: 100%;
+  border: 1px solid rgba(85, 240, 221, 0.22);
+  border-radius: 8px;
+  color: #edf7f8;
+  background: #0d1418;
+  padding: 11px 12px;
+}
+
+.detailTitleInput {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.detailSummaryInput,
+.turnEditInput {
+  line-height: 1.65;
+  resize: vertical;
+}
+
+.editActionBar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.12);
+  border-radius: 8px;
+  background: rgba(17, 24, 30, 0.42);
+}
+
+.exportMenu {
+  position: relative;
+  justify-self: end;
+}
+
+.exportMenuList {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 10;
+  display: grid;
+  gap: 6px;
+  width: 230px;
+  padding: 8px;
+  border: 1px solid rgba(151, 174, 180, 0.14);
+  border-radius: 8px;
+  background: #0d1418;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.38);
+}
+
+.exportMenuList button {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 54px;
+  border: 0;
+  border-radius: 7px;
+  color: #dbe5e9;
+  text-align: left;
+  background: transparent;
+  padding: 8px;
+}
+
+.exportMenuList button:hover {
+  background: rgba(17, 56, 58, 0.42);
+}
+
+.exportMenuList strong,
+.exportMenuList small {
+  display: block;
+}
+
+.exportMenuList small {
+  margin-top: 2px;
+  color: #8ea0a7;
+}
+
+.sourceChip {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.45fr) minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.13);
+  border-radius: 8px;
+  color: #dbe5e9;
+  text-align: left;
+  background: rgba(17, 24, 30, 0.48);
+}
+
+.sourceChip:hover {
+  border-color: rgba(85, 240, 221, 0.34);
+  background: rgba(17, 56, 58, 0.28);
+}
+
+.sourceChip span,
+.sourceChip strong,
+.sourceChip small {
+  display: block;
+}
+
+.sourceChip strong {
+  color: #edf7f8;
+}
+
+.sourceChip small {
+  margin-top: 4px;
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
+.sourceChip em {
+  color: #c8d5d9;
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+
 .selectCheck {
   display: inline-flex;
   align-items: center;
@@ -718,6 +1189,100 @@ button {
   text-decoration: none;
 }
 
+.activityOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 7, 10, 0.58);
+}
+
+.confirmOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 7, 10, 0.48);
+}
+
+.confirmModal {
+  display: grid;
+  gap: 12px;
+  width: min(520px, 100%);
+  padding: 18px;
+  border: 1px solid rgba(85, 240, 221, 0.24);
+  border-radius: 8px;
+  background: #0d1418;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
+}
+
+.confirmModal p {
+  margin: 0;
+  color: #a9b8bd;
+  overflow-wrap: anywhere;
+}
+
+.confirmModal .primaryButton {
+  justify-self: end;
+}
+
+.activityModal {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 14px;
+  width: min(520px, 100%);
+  padding: 18px;
+  border: 1px solid rgba(85, 240, 221, 0.24);
+  border-radius: 8px;
+  background: #0d1418;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
+}
+
+.activitySpinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(85, 240, 221, 0.18);
+  border-top-color: #55f0dd;
+  border-radius: 999px;
+  animation: spin 0.9s linear infinite;
+}
+
+.activityContent {
+  display: grid;
+  gap: 8px;
+}
+
+.activityContent p,
+.activityContent small {
+  margin: 0;
+  color: #a9b8bd;
+}
+
+.activityProgressTrack {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #1b252b;
+}
+
+.activityProgressTrack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #55f0dd;
+  transition: width 0.24s ease;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 1120px) {
   .shell,
   .workspace {
@@ -726,6 +1291,16 @@ button {
 
   .sidebar {
     position: static;
+    width: auto;
+    inset: auto;
+  }
+
+  .mainPanel {
+    grid-column: 1;
+  }
+
+  .appFooter {
+    left: 0;
   }
 
   .nav {
@@ -745,6 +1320,7 @@ button {
 
   .topbar,
   .sectionHeader,
+  .detailHeader,
   .turn,
   .dateRangeControl {
     align-items: stretch;
@@ -752,12 +1328,37 @@ button {
     flex-direction: column;
   }
 
+  .exportMenu {
+    justify-self: stretch;
+  }
+
+  .detailActionGroup {
+    justify-self: stretch;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .editActionBar {
+    flex-direction: column;
+  }
+
+  .exportMenuList {
+    position: static;
+    width: 100%;
+    margin-top: 8px;
+  }
+
   .statusStrip,
   .hotspotGrid,
   .guestGrid,
   .planColumns,
   .nav,
-  .historyLayout {
+  .historyLayout,
+  .feedAddPanel,
+  .feedPresetToolbar,
+  .presetFeedGrid,
+  .sourceItem,
+  .sourceChip {
     grid-template-columns: 1fr;
   }
 

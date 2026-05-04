@@ -34,7 +34,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "APD AI Roundtable Workbench ${{ github.ref_name }}"
+          releaseName: "AI Roundtable ${{ github.ref_name }}"
           releaseBody: "Draft Windows installer release. Validate SmartScreen behavior, install path, and local JSON storage before publishing."
           releaseDraft: true
           prerelease: true

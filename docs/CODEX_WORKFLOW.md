@@ -37,7 +37,7 @@ For UI work, also inspect the app in a browser or Tauri window and check:
 - Narrow viewport stacks cleanly.
 
 ## Review Checklist
-- Does the change preserve the Windows local tool positioning?
+- Does the change preserve the local desktop tool positioning, with Windows as the primary packaged release target and macOS self-build support intact?
 - Does it avoid "daily public website" language?
 - Are sources preserved for generated content?
 - Does the UI expose failure and empty states?

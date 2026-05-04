@@ -1,22 +1,24 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "APD AI Roundtable Workbench",
+  "productName": "AI小圆桌",
   "version": "0.1.0",
-  "identifier": "com.apd.ai-roundtable-workbench",
+  "identifier": "com.ai.roundtable",
   "build": {
-    "beforeDevCommand": "npm.cmd run dev",
+    "beforeDevCommand": "node scripts/run-npm.mjs dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm.cmd run build",
+    "beforeBuildCommand": "node scripts/run-npm.mjs build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "APD AI Roundtable Workbench",
+        "title": "AI小圆桌",
         "width": 1440,
         "height": 920,
         "minWidth": 980,
         "minHeight": 680,
+        "maximized": true,
+        "windowClassname": "ai-roundtable-main-window",
         "resizable": true,
         "fullscreen": false
       }
@@ -27,8 +29,15 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/512x512.png",
+      "icons/1024x1024.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "windows": {
       "nsis": {
         "displayLanguageSelector": true,

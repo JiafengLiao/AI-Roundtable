@@ -14,6 +14,10 @@ export function getFeeds() {
   return invoke<FeedSource[]>("get_feeds");
 }
 
+export function getAppDataDir() {
+  return invoke<string>("get_app_data_dir");
+}
+
 export function saveFeeds(feeds: FeedSource[]) {
   return invoke<FeedSource[]>("save_feeds", { feeds });
 }
@@ -36,6 +40,14 @@ export function generateEpisodeDraft(plan: RoundtablePlan, hotspot: HotspotCandi
 
 export function saveEpisodeDraft(draft: EpisodeDraft) {
   return invoke<string>("save_episode_draft", { draft });
+}
+
+export function writeTextFile(path: string, content: string) {
+  return invoke<string>("write_text_file", { path, content });
+}
+
+export function writeBinaryFile(path: string, base64Content: string) {
+  return invoke<string>("write_binary_file", { path, base64Content });
 }
 
 export function getModelCatalog() {

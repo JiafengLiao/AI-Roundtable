@@ -1,7 +1,7 @@
 # Codex Working Guide
 
 ## Project Context
-APD is a Windows-first local AI weekly roundtable workbench. It helps an editor collect weekly AI hotspots from RSS and manual input, ask a central planning agent to design the discussion, then generate and review a Chinese text roundtable draft.
+AI Roundtable (`ai-roundtable`) is a local AI weekly roundtable workbench. The user-facing Chinese product name is AI小圆桌. The project remains Windows-first for packaged releases, but macOS users should be able to build unsigned local app bundles from source. It helps an editor collect weekly AI hotspots from RSS and manual input, ask a central planning agent to design the discussion, then generate and review a Chinese text roundtable draft.
 
 This is a content production tool, not a public media landing page.
 
@@ -17,6 +17,7 @@ Useful references:
 - Use Tauri v2, React, TypeScript, Vite, and local JSON storage.
 - Prefer small, focused changes that preserve the local-first MVP.
 - Use `npm.cmd` on Windows instead of `npm` when invoking scripts from PowerShell.
+- Use plain `npm` on macOS/Linux.
 - Keep LLM provider code OpenAI-compatible, with a Mock fallback when no API key exists.
 - Never present simulated roundtable guests as real interviewed people.
 - Keep sources attached to every generated draft and make uncertainty visible.
@@ -37,8 +38,21 @@ npm.cmd run build
 npm.cmd run tauri:build
 ```
 
+macOS equivalents:
+
+```bash
+npm install
+npm run dev
+npm run tauri:dev
+npm run build
+npm run tauri:build:mac
+```
+
 ## Documentation Map
-- `README.md`: human-facing overview and local workflow.
+- `README.md`: English human-facing overview and local workflow.
+- `README.zh-CN.md`: Chinese human-facing overview and local workflow.
+- `dev_readme.md`: English local development, packaging, and release commands.
+- `dev_readme.zh-CN.md`: Chinese local development, packaging, and release commands.
 - `docs/PRODUCT_REQUIREMENTS.md`: product scope and success criteria.
 - `docs/TECHNICAL_PLAN.md`: architecture and data flow.
 - `docs/FRONTEND_UX_REQUIREMENTS.md`: UI, UX, and visual quality bar.

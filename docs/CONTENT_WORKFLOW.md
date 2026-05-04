@@ -1,7 +1,7 @@
 # Content Workflow
 
 ## Weekly Workflow
-1. Open APD.
+1. Open AI小圆桌.
 2. Choose or confirm the current week range.
 3. Trigger RSS fetch.
 4. Review candidate hotspots.

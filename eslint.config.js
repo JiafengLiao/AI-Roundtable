@@ -9,6 +9,17 @@ export default [
   },
   js.configs.recommended,
   {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: {
+        console: "readonly",
+        process: "readonly"
+      }
+    }
+  },
+  {
     files: ["src/**/*.{ts,tsx}", "vite.config.ts"],
     languageOptions: {
       parser: tsParser,
@@ -18,6 +29,7 @@ export default [
       },
       globals: {
         console: "readonly",
+        Blob: "readonly",
         document: "readonly",
         HTMLElement: "readonly",
         performance: "readonly",

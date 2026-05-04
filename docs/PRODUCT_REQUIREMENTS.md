@@ -1,7 +1,7 @@
 # Product Requirements
 
 ## Summary
-APD is a Windows local AI weekly roundtable workbench. It helps an editor or AI practitioner collect weekly AI hotspots, organize source material, and generate an editable Chinese roundtable draft through a central planning agent.
+AI小圆桌 is a local AI weekly roundtable workbench. It helps an editor or AI practitioner collect weekly AI hotspots, organize source material, and generate an editable Chinese roundtable draft through a central planning agent. Windows is the primary packaged release target; macOS users can self-build local unsigned app bundles from source.
 
 The product is a tool, not a reader-facing publication site. The user opens the app to produce, review, and save content.
 
@@ -21,7 +21,9 @@ The product is a tool, not a reader-facing publication site. The user opens the 
 - Save the draft locally.
 
 ## MVP Scope
-- Windows desktop app built with Tauri.
+- Desktop app built with Tauri.
+- Windows NSIS installer as the primary packaged release.
+- macOS unsigned `.app` / `.dmg` self-build path for open-source users.
 - Manual RSS fetch with week-range filtering.
 - RSS source management.
 - Manual hotspot creation.
@@ -37,7 +39,7 @@ The product is a tool, not a reader-facing publication site. The user opens the 
 - Public publishing CMS.
 - Fully autonomous publishing.
 - Complex recommendation ranking.
-- macOS/Linux packaging before the Windows MVP is stable.
+- Official signed macOS/Linux packaging before the Windows MVP is stable.
 
 ## Success Criteria
 - A user can understand the selected weekly hotspot within 30 seconds of opening the workbench.

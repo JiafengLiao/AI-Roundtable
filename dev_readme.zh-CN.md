@@ -1,106 +1,106 @@
-# AI Roundtable Development README
+# AI小圆桌开发 README
 
-This file collects local development, verification, packaging, and release commands for **AI小圆桌**. The internal project name is `ai-roundtable`.
+这个文件整理 **AI小圆桌** 的本地开发、验证、打包和发布命令。项目内部名统一为 `ai-roundtable`。
 
-Project root:
+项目根目录：
 
 ```powershell
 cd C:\Users\ThinkPad\Desktop\vibe_coding_projects\APD
 ```
 
-Use `npm.cmd` on Windows PowerShell. Use plain `npm` on macOS and Linux.
+Windows PowerShell 下优先使用 `npm.cmd`。macOS 和 Linux 使用普通 `npm`。
 
-## Open The App
+## 打开应用
 
-Run the packaged installer:
+运行打包后的安装器：
 
 ```powershell
 & "C:\Users\ThinkPad\Desktop\vibe_coding_projects\APD\src-tauri\target\release\bundle\nsis\AI小圆桌_0.1.0_x64-setup.exe"
 ```
 
-After installation, open **AI小圆桌** from the Windows Start menu.
+安装后，从 Windows 开始菜单打开 **AI小圆桌**。
 
-Run the built desktop executable directly:
+直接运行构建出的桌面程序：
 
 ```powershell
 & "C:\Users\ThinkPad\Desktop\vibe_coding_projects\APD\src-tauri\target\release\ai-roundtable.exe"
 ```
 
-## Install Dependencies
+## 安装依赖
 
-Windows:
+Windows：
 
 ```powershell
 npm.cmd install
 ```
 
-macOS:
+macOS：
 
 ```bash
 npm install
 ```
 
-## Frontend Development
+## 前端开发
 
-Start the Vite dev server:
+启动 Vite 开发服务器：
 
 ```powershell
 npm.cmd run dev
 ```
 
-On macOS:
+macOS：
 
 ```bash
 npm run dev
 ```
 
-Open:
+打开：
 
 ```text
 http://127.0.0.1:1420
 ```
 
-Preview a production frontend build:
+预览生产前端构建：
 
 ```powershell
 npm.cmd run build
 npm.cmd run preview
 ```
 
-On macOS:
+macOS：
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## Tauri Development
+## Tauri 开发
 
-Ensure Cargo is available in the current PowerShell session:
+确保当前 PowerShell 会话能访问 Cargo：
 
 ```powershell
 $env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
 cargo --version
 ```
 
-Start the Tauri desktop dev window:
+启动 Tauri 桌面开发窗口：
 
 ```powershell
 npm.cmd run tauri:dev
 ```
 
-On macOS, install Xcode Command Line Tools first:
+macOS 先安装 Xcode Command Line Tools：
 
 ```bash
 xcode-select --install
 npm run tauri:dev
 ```
 
-Tauri backend calls use `invoke(...)`, not HTTP. They will not appear in the browser Network panel. Use the Tauri desktop window, check the DevTools Console for frontend errors, and inspect local JSON output under the app data directory.
+Tauri 后端调用使用 `invoke(...)`，不是 HTTP，所以不会出现在浏览器 Network 面板里。调试时看 Tauri 桌面窗口、DevTools Console，以及 app data 目录下的本地 JSON 输出。
 
-## LLM Prompt Configuration
+## LLM Prompt 配置
 
-Bundled prompt and persona config:
+内置 prompt 和 persona 配置：
 
 ```text
 config\prompts\personas.json
@@ -113,59 +113,59 @@ config\prompts\schemas\*.schema.json
 config\prompts\fallbacks.json
 ```
 
-On first run, the app seeds a writable copy into the Tauri app data directory:
+首次运行时，应用会把配置种子写入 Tauri app data 目录：
 
 ```text
 %APPDATA%\com.ai.roundtable\llm-prompts.json
 ```
 
-macOS app data path:
+macOS app data 路径：
 
 ```text
 ~/Library/Application Support/com.ai.roundtable/llm-prompts.json
 ```
 
-Runtime generation reads the app data copy when it is version 3 or newer. Edit the app-data file for local prompt tuning, or edit files under `config\prompts\` to change the bundled default.
+运行时会优先读取 version 3 或更新版本的 app data 配置。想做本地 prompt 调优，可以改 app data 文件；想改内置默认值，可以改 `config\prompts\` 下的文件。
 
-## Verify
+## 验证
 
-Run TypeScript checks:
+运行 TypeScript 检查：
 
 ```powershell
 npm.cmd run typecheck
 ```
 
-macOS:
+macOS：
 
 ```bash
 npm run typecheck
 ```
 
-Run lint:
+运行 lint：
 
 ```powershell
 npm.cmd run lint
 ```
 
-macOS:
+macOS：
 
 ```bash
 npm run lint
 ```
 
-Run frontend production build:
+运行前端生产构建：
 
 ```powershell
 npm.cmd run build
 ```
 
-macOS:
+macOS：
 
 ```bash
 npm run build
 ```
 
-Recommended pre-commit verification:
+推荐提交前验证：
 
 ```powershell
 npm.cmd run typecheck
@@ -173,7 +173,7 @@ npm.cmd run lint
 npm.cmd run build
 ```
 
-macOS:
+macOS：
 
 ```bash
 npm run typecheck
@@ -181,15 +181,15 @@ npm run lint
 npm run build
 ```
 
-## Package Windows Installer
+## 打包 Windows 安装器
 
-Basic command:
+基础命令：
 
 ```powershell
 npm.cmd run tauri:build
 ```
 
-More reliable command when running from a plain PowerShell session:
+如果是在普通 PowerShell 会话里，下面这组命令更稳：
 
 ```powershell
 $vcvars = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
@@ -203,16 +203,16 @@ $env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
 npm.cmd run tauri:build
 ```
 
-Expected outputs:
+预期输出：
 
 ```text
 src-tauri\target\release\ai-roundtable.exe
 src-tauri\target\release\bundle\nsis\AI小圆桌_0.1.0_x64-setup.exe
 ```
 
-## Package macOS App Locally
+## 本地打包 macOS App
 
-macOS packages must be built on a Mac. Install Xcode Command Line Tools and Rust first:
+macOS 包必须在 Mac 上构建。先安装 Xcode Command Line Tools 和 Rust：
 
 ```bash
 xcode-select --install
@@ -220,31 +220,31 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 npm install
 ```
 
-Build an unsigned app and DMG for the current Mac architecture:
+构建当前 Mac 架构的未签名 app 和 DMG：
 
 ```bash
 npm run tauri:build:mac
 ```
 
-Expected outputs:
+预期输出：
 
 ```text
 src-tauri/target/release/bundle/macos/AI小圆桌.app
 src-tauri/target/release/bundle/dmg/AI小圆桌_0.1.0_*.dmg
 ```
 
-Build a universal Apple Silicon + Intel app:
+构建同时兼容 Apple Silicon 和 Intel 的 universal app：
 
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npm run tauri:build:mac:universal
 ```
 
-For personal use, users can run the unsigned app locally. Distribution to other Mac users requires Apple Developer code signing and notarization. Without signing/notarization, Gatekeeper can block the app or show security warnings.
+个人使用可以运行本地未签名 app。要公开分发给其他 Mac 用户，需要 Apple Developer 代码签名和公证；没有签名/公证时，Gatekeeper 可能会拦截或提示风险。
 
-## Rust And Build Tools
+## Rust 和构建工具
 
-Check Rust:
+检查 Rust：
 
 ```powershell
 $env:PATH="$env:USERPROFILE\.cargo\bin;$env:PATH"
@@ -253,7 +253,7 @@ cargo --version
 rustup show
 ```
 
-Install Rust manually if needed:
+必要时手动安装 Rust：
 
 ```powershell
 $installer = Join-Path $env:TEMP "rustup-init.exe"
@@ -261,7 +261,7 @@ Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $installer
 & $installer -y --default-toolchain stable --profile default
 ```
 
-Install Visual Studio Build Tools manually if needed:
+必要时手动安装 Visual Studio Build Tools：
 
 ```powershell
 $installer = Join-Path $env:TEMP "vs_BuildTools.exe"
@@ -271,22 +271,22 @@ Start-Process -FilePath $installer -ArgumentList "--quiet","--wait","--norestart
 
 ## GitHub CI
 
-The PR workflow is defined at `.github\workflows\ci.yml` and runs dependency install, typecheck, lint, frontend build, and a Windows Tauri build smoke test. macOS users can run the local macOS build commands above.
+PR workflow 在 `.github\workflows\ci.yml`，会执行依赖安装、typecheck、lint、前端构建和 Windows Tauri 构建 smoke test。macOS 用户可以按上面的本地构建命令自行打包。
 
 ## GitHub Release
 
-Create a release by pushing an app tag:
+推送 app tag 创建 release：
 
 ```powershell
 git tag app-v0.1.0
 git push origin app-v0.1.0
 ```
 
-The workflow creates a draft GitHub release and uploads the Windows installer artifact. macOS public release artifacts should be added only after signing and notarization are configured.
+workflow 会创建 draft GitHub release，并上传 Windows 安装器。macOS 公开发布产物建议等签名和公证配置完成后再加入。
 
-## Useful Cleanup
+## 常用清理
 
-Use cleanup commands carefully; they delete generated files and dependencies.
+下面的命令会删除生成物和依赖，使用时要确认清楚。
 
 ```powershell
 Remove-Item -Recurse -Force dist

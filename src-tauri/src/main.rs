@@ -1,3 +1,3 @@
 fn main() {
-    apd_ai_roundtable_workbench_lib::run();
+    ai_roundtable_lib::run();
 }

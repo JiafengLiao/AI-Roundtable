@@ -1,10 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Allow the main APD workbench window to use Tauri IPC and core window features in local and dev modes.",
+  "description": "Allow the main AI小圆桌 workbench window to use Tauri IPC and core window features in local and dev modes.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:1420", "http://localhost:1420"]
   },
-  "permissions": ["core:default", "opener:default"]
+  "permissions": ["core:default", "opener:default", "dialog:default"]
 }

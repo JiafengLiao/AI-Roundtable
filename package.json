@@ -1,9 +1,9 @@
 {
-  "name": "apd-ai-roundtable-workbench",
+  "name": "ai-roundtable",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Windows local AI weekly roundtable content workbench built with Tauri, React, and TypeScript.",
+  "description": "ai-roundtable local AI weekly roundtable content workbench built with Tauri, React, and TypeScript.",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -12,18 +12,25 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:windows": "tauri build --bundles nsis",
+    "tauri:build:mac": "tauri build --bundles app,dmg",
+    "tauri:build:mac:universal": "tauri build --target universal-apple-darwin --bundles app,dmg",
+    "icons:regen": "tauri icon src-tauri/icons/icon.svg"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.2.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.2.0",
     "@eslint/js": "^9.16.0",
+    "@tauri-apps/cli": "^2.2.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@typescript-eslint/eslint-plugin": "^8.17.0",

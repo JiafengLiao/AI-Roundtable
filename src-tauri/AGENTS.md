@@ -1,7 +1,7 @@
 # Tauri Instructions
 
 ## Scope
-This directory owns Windows desktop packaging, local commands, file access, RSS fetching, and future secure provider configuration.
+This directory owns desktop packaging, local commands, file access, RSS fetching, and future secure provider configuration. Windows NSIS is the primary release target; macOS local `.app` / `.dmg` builds should remain buildable from source.
 
 ## Rules
 - Keep the Rust side thin until the MVP needs deeper native behavior.

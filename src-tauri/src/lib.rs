@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose, Engine as _};
 use chrono::Utc;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -10,10 +11,42 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     io::Cursor,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use tauri::Manager;
+
+// #region agent log
+fn agent_debug_log(hypothesis_id: &str, message: &str, data: serde_json::Value) {
+    use std::io::Write;
+    let line = json!({
+        "sessionId": "0bc2c7",
+        "hypothesisId": hypothesis_id,
+        "location": "lib.rs:run",
+        "message": message,
+        "data": data,
+        "timestamp": chrono::Utc::now().timestamp_millis()
+    });
+    if let Ok(s) = serde_json::to_string(&line) {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../debug-0bc2c7.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "{s}");
+        } else {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("debug-0bc2c7.log"))
+                .and_then(|mut f| writeln!(f, "{s}"));
+        }
+        let _ = reqwest::blocking::Client::new()
+            .post("http://127.0.0.1:7392/ingest/1d8fd106-54ad-46ee-b534-fd4175ab8428")
+            .header("Content-Type", "application/json")
+            .header("X-Debug-Session-Id", "0bc2c7")
+            .body(s)
+            .send();
+    }
+}
+// #endregion
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Source {
@@ -295,6 +328,11 @@ fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+#[tauri::command]
+fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
+    data_dir(&app).map(|path| path.to_string_lossy().to_string())
+}
+
 fn read_json<T>(path: PathBuf) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
@@ -446,6 +484,12 @@ fn provider_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("provider-settings.json"))
 }
 
+fn llm_logs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = data_dir(app)?.join("llm-logs");
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    Ok(dir)
+}
+
 fn prompt_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("llm-prompts.json"))
 }
@@ -595,10 +639,41 @@ fn prompt_for_provider(provider_id: &str, prompt: String, schema: &JsonSchemaSpe
     )
 }
 
+fn write_llm_log(
+    log_dir: Option<&Path>,
+    task: &str,
+    provider_id: &str,
+    model: &str,
+    request: &serde_json::Value,
+    response: Option<&serde_json::Value>,
+    raw_content: Option<&str>,
+    error: Option<&str>,
+) {
+    let Some(log_dir) = log_dir else {
+        return;
+    };
+    let created_at = now();
+    let log = json!({
+        "createdAt": created_at,
+        "task": task,
+        "providerId": provider_id,
+        "model": model,
+        "request": request,
+        "response": response,
+        "rawContent": raw_content,
+        "error": error
+    });
+    let file_id = stable_id("llm-log", &format!("{created_at}-{task}-{model}"));
+    let filename = format!("{created_at}-{file_id}.json").replace(':', "-");
+    let _ = write_json(log_dir.join(filename), &log);
+}
+
 fn openai_chat_json(
     client: &Client,
     url: &str,
     provider_id: &str,
+    log_dir: Option<&Path>,
+    task: &str,
     api_key: &str,
     model: &str,
     system_prompt: &str,
@@ -616,22 +691,34 @@ fn openai_chat_json(
         "response_format": response_format_for_provider(provider_id, schema)
     });
 
-    let response: ChatCompletionResponse = client
+    let response_result = client
         .post(url)
         .bearer_auth(api_key)
         .json(&body)
         .send()
         .and_then(|response| response.error_for_status())
-        .map_err(|error| error.to_string())?
-        .json()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())
+        .and_then(|response| response.json::<ChatCompletionResponse>().map_err(|error| error.to_string()));
+
+    let response = match response_result {
+        Ok(response) => response,
+        Err(error) => {
+            write_llm_log(log_dir, task, provider_id, model, &body, None, None, Some(&error));
+            return Err(error);
+        }
+    };
 
     let content = response
         .choices
         .first()
         .map(|choice| choice.message.content.clone())
         .ok_or_else(|| "模型没有返回内容".to_string())?;
-    serde_json::from_str(content.trim()).map_err(|error| error.to_string())
+    let parsed = serde_json::from_str(content.trim()).map_err(|error| error.to_string());
+    match &parsed {
+        Ok(value) => write_llm_log(log_dir, task, provider_id, model, &body, Some(value), Some(&content), None),
+        Err(error) => write_llm_log(log_dir, task, provider_id, model, &body, None, Some(&content), Some(error)),
+    }
+    parsed
 }
 
 fn get_or_seed_feeds(app: &tauri::AppHandle) -> Result<Vec<FeedSource>, String> {
@@ -661,7 +748,7 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
     let mut feeds = get_or_seed_feeds(&app)?;
     let client = Client::builder()
         .timeout(Duration::from_secs(15))
-        .user_agent("APD AI Roundtable Workbench/0.1")
+        .user_agent("ai-roundtable/0.1")
         .build()
         .map_err(|error| error.to_string())?;
     let mut candidates = Vec::new();
@@ -800,6 +887,7 @@ fn generate_roundtable_plan(
     settings: Option<ProviderSettings>,
 ) -> Result<RoundtablePlan, String> {
     let prompt_config = get_or_seed_prompt_config(Some(&app))?;
+    let log_dir = llm_logs_dir(&app)?;
     if let Some(settings) = settings {
         if settings.provider_id == "mock" {
             return Ok(generate_rule_based_plan(hotspot, &prompt_config));
@@ -811,6 +899,7 @@ fn generate_roundtable_plan(
         return generate_plan_with_openai_compatible(
             &hotspot,
             &settings.provider_id,
+            Some(log_dir.as_path()),
             &settings.base_url,
             &api_key,
             &model,
@@ -867,6 +956,7 @@ fn generate_rule_based_plan(
 fn generate_plan_with_openai_compatible(
     hotspot: &HotspotCandidate,
     provider_id: &str,
+    log_dir: Option<&Path>,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -874,7 +964,7 @@ fn generate_plan_with_openai_compatible(
 ) -> Result<RoundtablePlan, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(45))
-        .user_agent("APD AI Roundtable Workbench/0.1")
+        .user_agent("ai-roundtable/0.1")
         .build()
         .map_err(|error| error.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -921,6 +1011,7 @@ fn generate_plan_with_openai_compatible(
         .ok_or_else(|| "模型没有返回内容".to_string())?;
     let value: serde_json::Value =
         serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
+    write_llm_log(log_dir, "roundtable_plan", provider_id, model, &body, Some(&value), Some(&content), None);
     let mut plan = generate_rule_based_plan(hotspot.clone(), prompt_config);
     if let Some(objective) = value.get("objective").and_then(|item| item.as_str()) {
         plan.objective = objective.to_string();
@@ -961,6 +1052,7 @@ fn generate_episode_draft(
     settings: Option<ProviderSettings>,
 ) -> Result<EpisodeDraft, String> {
     let prompt_config = get_or_seed_prompt_config(Some(&app))?;
+    let log_dir = llm_logs_dir(&app)?;
     if let Some(settings) = settings {
         if settings.provider_id == "mock" {
             return Ok(generate_rule_based_draft(plan, hotspot, &prompt_config));
@@ -980,6 +1072,7 @@ fn generate_episode_draft(
                 &plan,
                 &hotspot,
                 &settings.provider_id,
+                Some(log_dir.as_path()),
                 &settings.base_url,
                 &api_key,
                 &model,
@@ -991,6 +1084,7 @@ fn generate_episode_draft(
                 &plan,
                 &hotspot,
                 &settings.provider_id,
+                Some(log_dir.as_path()),
                 &settings.base_url,
                 &api_key,
                 &model,
@@ -1070,6 +1164,7 @@ fn generate_draft_with_openai_compatible(
     plan: &RoundtablePlan,
     hotspot: &HotspotCandidate,
     provider_id: &str,
+    log_dir: Option<&Path>,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -1077,7 +1172,7 @@ fn generate_draft_with_openai_compatible(
 ) -> Result<EpisodeDraft, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(90))
-        .user_agent("APD AI Roundtable Workbench/0.1")
+        .user_agent("ai-roundtable/0.1")
         .build()
         .map_err(|error| error.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -1123,6 +1218,7 @@ fn generate_draft_with_openai_compatible(
         .ok_or_else(|| "模型没有返回内容".to_string())?;
     let value: serde_json::Value =
         serde_json::from_str(content.trim()).map_err(|error| error.to_string())?;
+    write_llm_log(log_dir, "episode_draft_single", provider_id, model, &body, Some(&value), Some(&content), None);
     let mut draft = generate_rule_based_draft(plan.clone(), hotspot.clone(), prompt_config);
     if let Some(title) = value.get("title").and_then(|item| item.as_str()) {
         draft.title = title.to_string();
@@ -1146,6 +1242,7 @@ fn generate_multi_agent_draft_with_openai_compatible(
     plan: &RoundtablePlan,
     hotspot: &HotspotCandidate,
     provider_id: &str,
+    log_dir: Option<&Path>,
     base_url: &str,
     api_key: &str,
     model: &str,
@@ -1153,7 +1250,7 @@ fn generate_multi_agent_draft_with_openai_compatible(
 ) -> Result<EpisodeDraft, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(90))
-        .user_agent("APD AI Roundtable Workbench/0.1")
+        .user_agent("ai-roundtable/0.1")
         .build()
         .map_err(|error| error.to_string())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -1183,6 +1280,8 @@ fn generate_multi_agent_draft_with_openai_compatible(
         &client,
         &url,
         provider_id,
+        log_dir,
+        "draft_turn_planner",
         api_key,
         model,
         &prompt_config.tasks.draft_turn_planner.system_prompt,
@@ -1240,6 +1339,8 @@ fn generate_multi_agent_draft_with_openai_compatible(
             &client,
             &url,
             provider_id,
+            log_dir,
+            "draft_guest_turn",
             api_key,
             model,
             &prompt_config.tasks.draft_guest_turn.system_prompt,
@@ -1318,6 +1419,29 @@ fn save_episode_draft(app: tauri::AppHandle, draft: EpisodeDraft) -> Result<Stri
 }
 
 #[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<String, String> {
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(&path, content).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn write_binary_file(path: String, base64_content: String) -> Result<String, String> {
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let bytes = general_purpose::STANDARD
+        .decode(base64_content)
+        .map_err(|error| error.to_string())?;
+    fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn list_episode_drafts(app: tauri::AppHandle) -> Result<Vec<EpisodeDraft>, String> {
     let dir = data_dir(&app)?.join("drafts");
     if !dir.exists() {
@@ -1376,13 +1500,6 @@ fn get_model_catalog() -> Vec<ModelProvider> {
             base_url: "https://api.deepseek.com".into(),
             models: vec!["deepseek-chat".into(), "deepseek-reasoner".into()],
             requires_api_key: true,
-        },
-        ModelProvider {
-            id: "mock".into(),
-            name: "本地规则生成器".into(),
-            base_url: "local".into(),
-            models: vec!["backend-rule-generator".into()],
-            requires_api_key: false,
         },
     ]
 }
@@ -1505,7 +1622,7 @@ fn fetch_provider_models(settings: &ProviderSettings) -> Result<Vec<String>, Str
 
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("APD AI Roundtable Workbench/0.1")
+        .user_agent("ai-roundtable/0.1")
         .build()
         .map_err(|error| error.to_string())?;
 
@@ -1564,16 +1681,93 @@ fn fetch_provider_models(settings: &ProviderSettings) -> Result<Vec<String>, Str
 }
 
 pub fn run() {
+    // #region agent log
+    {
+        let icons_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons");
+        let mut files: Vec<serde_json::Value> = Vec::new();
+        if let Ok(rd) = fs::read_dir(&icons_dir) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if let Ok(meta) = entry.metadata() {
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("");
+                    files.push(json!({
+                        "name": entry.file_name().to_string_lossy(),
+                        "len": meta.len(),
+                        "ext": ext,
+                    }));
+                }
+            }
+        }
+        files.sort_by(|a, b| {
+            let na = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let nb = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            na.cmp(nb)
+        });
+        agent_debug_log(
+            "H1_H2_H3",
+            "startup_icons_dir_scan",
+            json!({ "icons_dir": icons_dir.display().to_string(), "files": files }),
+        );
+    }
+    // #endregion
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // #region agent log
+            #[cfg(windows)]
+            {
+                let icon_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons/icon.ico");
+                let load = tauri::image::Image::from_path(&icon_path).map(|i| i.to_owned());
+                agent_debug_log(
+                    "H6",
+                    "runtime_icon_from_path",
+                    json!({
+                        "path": icon_path.display().to_string(),
+                        "ok": load.is_ok(),
+                        "err": load.as_ref().err().map(|e| e.to_string()),
+                        "decode_w": load.as_ref().ok().map(|i| i.width()),
+                        "decode_h": load.as_ref().ok().map(|i| i.height()),
+                    }),
+                );
+                if let Ok(icon) = load {
+                    for (label, window) in app.webview_windows() {
+                        match window.set_icon(icon.clone()) {
+                            Ok(()) => {
+                                agent_debug_log(
+                                    "H6",
+                                    "runtime_set_icon",
+                                    json!({ "label": label, "ok": true }),
+                                );
+                            }
+                            Err(err) => {
+                                agent_debug_log(
+                                    "H6",
+                                    "runtime_set_icon",
+                                    json!({ "label": label, "ok": false, "err": err.to_string() }),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // #endregion
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_feeds,
+            get_app_data_dir,
             save_feeds,
             search_hotspots,
             add_manual_hotspot,
             generate_roundtable_plan,
             generate_episode_draft,
             save_episode_draft,
+            write_text_file,
+            write_binary_file,
             get_model_catalog,
             refresh_model_catalog,
             validate_provider_connection,
