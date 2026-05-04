@@ -1,24 +1,41 @@
+/// Paths listed in `bundle.icon` in `tauri.conf.json` (keep the two in sync).
+const BUNDLE_ICON_PATHS: &[&str] = &[
+    "icons/16x16.png",
+    "icons/20x20.png",
+    "icons/24x24.png",
+    "icons/30x30.png",
+    "icons/32x32.png",
+    "icons/36x36.png",
+    "icons/40x40.png",
+    "icons/44x44.png",
+    "icons/48x48.png",
+    "icons/64x64.png",
+    "icons/96x96.png",
+    "icons/128x128.png",
+    "icons/150x150.png",
+    "icons/128x128@2x.png",
+    "icons/256x256.png",
+    "icons/512x512.png",
+    "icons/1024x1024.png",
+    "icons/icon.icns",
+    "icons/icon.ico",
+];
+
 fn main() {
-    println!("cargo:rerun-if-changed=icons/icon.ico");
-    println!("cargo:rerun-if-changed=icons/icon.icns");
-    println!("cargo:rerun-if-changed=icons/16x16.png");
-    println!("cargo:rerun-if-changed=icons/20x20.png");
-    println!("cargo:rerun-if-changed=icons/24x24.png");
-    println!("cargo:rerun-if-changed=icons/30x30.png");
-    println!("cargo:rerun-if-changed=icons/32x32.png");
-    println!("cargo:rerun-if-changed=icons/36x36.png");
-    println!("cargo:rerun-if-changed=icons/40x40.png");
-    println!("cargo:rerun-if-changed=icons/44x44.png");
-    println!("cargo:rerun-if-changed=icons/48x48.png");
-    println!("cargo:rerun-if-changed=icons/64x64.png");
-    println!("cargo:rerun-if-changed=icons/96x96.png");
-    println!("cargo:rerun-if-changed=icons/128x128.png");
-    println!("cargo:rerun-if-changed=icons/150x150.png");
-    println!("cargo:rerun-if-changed=icons/128x128@2x.png");
-    println!("cargo:rerun-if-changed=icons/256x256.png");
-    println!("cargo:rerun-if-changed=icons/512x512.png");
-    println!("cargo:rerun-if-changed=icons/1024x1024.png");
+    for path in BUNDLE_ICON_PATHS {
+        println!("cargo:rerun-if-changed={}", path);
+    }
+
     tauri_build::build();
+
+    for path in BUNDLE_ICON_PATHS {
+        if !std::path::Path::new(path).exists() {
+            println!(
+                "cargo:warning=missing {}; run `npm run icons:regen` in project root",
+                path
+            );
+        }
+    }
 
     #[cfg(windows)]
     {
@@ -43,6 +60,7 @@ fn main() {
                             .collect::<Vec<_>>()
                             .join(",")
                     );
+                    // Per https://v2.tauri.app/develop/icons/ — ICO must include these layers (256 is the 256×256 image).
                     let required = [16u32, 24, 32, 48, 64, 256];
                     for need in required {
                         let ok = sizes.iter().any(|&s| s == need);
@@ -57,8 +75,6 @@ fn main() {
                     println!("cargo:warning=icon.ico could not be parsed as ICO");
                 }
             }
-        } else {
-            println!("cargo:warning=icons/icon.ico missing");
         }
     }
 }
