@@ -17,6 +17,7 @@ tauri-build = { version = "2.0", features = [] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 hound = "3.5"
+pdf-extract = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rss = "2.0"
 serde = { version = "1", features = ["derive"] }
@@ -26,3 +27,4 @@ tauri = { version = "2.0", features = ["image-ico"] }
 tauri-plugin-dialog = "2.0"
 tauri-plugin-opener = "2.0"
 time = { version = "0.3", features = ["formatting", "macros"] }
+zip = "0.6"

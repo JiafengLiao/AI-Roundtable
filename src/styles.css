@@ -681,6 +681,53 @@ button {
   color: #c8d5d9;
 }
 
+.manualAttachmentPanel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid rgba(85, 240, 221, 0.18);
+  border-radius: 8px;
+  background: rgba(13, 27, 30, 0.62);
+}
+
+.manualAttachmentPanel strong,
+.manualAttachmentPanel span {
+  display: block;
+}
+
+.manualAttachmentPanel span {
+  margin-top: 4px;
+  color: #8ea0a7;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.manualAttachmentPath {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #9fb2b7;
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.manualAttachmentPath strong {
+  display: inline;
+  color: #edf7f8;
+}
+
+.manualAttachmentPath code {
+  color: #55f0dd;
+}
+
+.manualContentInput {
+  height: 260px;
+  min-height: 260px;
+  resize: vertical;
+}
+
 .filterPanel {
   display: grid;
   gap: 10px;
@@ -1359,6 +1406,7 @@ button {
   .nav,
   .historyLayout,
   .feedAddPanel,
+  .manualAttachmentPanel,
   .feedPresetToolbar,
   .presetFeedGrid,
   .sourceItem,

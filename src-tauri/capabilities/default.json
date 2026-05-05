@@ -4,7 +4,7 @@
   "description": "Allow the main AI小圆桌 workbench window to use Tauri IPC and core window features in local and dev modes.",
   "windows": ["main"],
   "remote": {
-    "urls": ["http://127.0.0.1:1420", "http://localhost:1420"]
+    "urls": ["http://127.0.0.1:5173", "http://localhost:5173"]
   },
   "permissions": ["core:default", "opener:default", "dialog:default"]
 }

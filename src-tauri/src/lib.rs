@@ -10,7 +10,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
-    io::Cursor,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -169,6 +169,20 @@ struct ManualHotspotInput {
     url: String,
     publisher: Option<String>,
     category: Option<String>,
+    content: Option<String>,
+    #[serde(rename = "sourceFilePath")]
+    source_file_path: Option<String>,
+    #[serde(rename = "sourceFileName")]
+    source_file_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ManualAttachmentImportResult {
+    #[serde(rename = "originalName")]
+    original_name: String,
+    #[serde(rename = "storedPath")]
+    stored_path: String,
+    content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -406,6 +420,110 @@ fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
     data_dir(&app).map(|path| path.to_string_lossy().to_string())
+}
+
+fn manual_attachments_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = data_dir(app)?.join("manual-attachments");
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    Ok(dir)
+}
+
+fn safe_file_name(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '-'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let trimmed = sanitized
+        .trim_matches(|ch| ch == '.' || ch == ' ' || ch == '-')
+        .to_string();
+    let safe = if trimmed.is_empty() {
+        "attachment".into()
+    } else {
+        trimmed
+    };
+    safe.chars().take(160).collect()
+}
+
+fn read_text_file_lossy(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    Ok(String::from_utf8_lossy(&bytes).to_string())
+}
+
+fn decode_basic_xml_entities(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#xA;", "\n")
+        .replace("&#10;", "\n")
+        .replace("&#13;", "\n")
+}
+
+fn strip_xml_tags(value: &str) -> String {
+    let mut text = String::with_capacity(value.len());
+    let mut in_tag = false;
+    for ch in value.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+    text
+}
+
+fn extract_docx_text(path: &Path) -> Result<String, String> {
+    let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| format!("DOCX 读取失败: {error}"))?;
+    let mut document = archive
+        .by_name("word/document.xml")
+        .map_err(|error| format!("DOCX 正文读取失败: {error}"))?;
+    let mut xml = String::new();
+    document
+        .read_to_string(&mut xml)
+        .map_err(|error| format!("DOCX 正文解析失败: {error}"))?;
+    let with_breaks = xml
+        .replace("</w:p>", "\n")
+        .replace("<w:br/>", "\n")
+        .replace("<w:br />", "\n")
+        .replace("<w:tab/>", "\t")
+        .replace("<w:tab />", "\t");
+    Ok(decode_basic_xml_entities(&strip_xml_tags(&with_breaks)))
+}
+
+fn normalize_imported_text(value: String) -> String {
+    value
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn extract_attachment_text(path: &Path, extension: &str) -> Result<String, String> {
+    let raw = match extension {
+        "txt" | "text" | "md" | "markdown" => read_text_file_lossy(path)?,
+        "pdf" => pdf_extract::extract_text(path).map_err(|error| format!("PDF 解析失败: {error}"))?,
+        "docx" => extract_docx_text(path)?,
+        "doc" => return Err("暂不支持旧版 .doc 二进制格式，请另存为 DOCX、PDF、MD 或 TXT 后再导入".into()),
+        other => return Err(format!("暂不支持 .{other} 文件，请上传 PDF、DOCX、MD 或 TXT")),
+    };
+    let content = normalize_imported_text(raw);
+    if content.is_empty() {
+        Err("附件没有解析出可用文本".into())
+    } else {
+        Ok(content)
+    }
 }
 
 fn read_json<T>(path: PathBuf) -> Result<T, String>
@@ -1187,6 +1305,45 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
 }
 
 #[tauri::command]
+fn import_manual_attachment(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<ManualAttachmentImportResult, String> {
+    let source_path = PathBuf::from(path);
+    if !source_path.exists() {
+        return Err("附件文件不存在".into());
+    }
+    if !source_path.is_file() {
+        return Err("请选择一个文件，而不是文件夹".into());
+    }
+
+    let original_name = source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("attachment")
+        .to_string();
+    let extension = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let stored_name = format!(
+        "{}-{}",
+        Utc::now().format("%Y%m%d%H%M%S%3f"),
+        safe_file_name(&original_name)
+    );
+    let content = extract_attachment_text(&source_path, &extension)?;
+    let stored_path = manual_attachments_dir(&app)?.join(stored_name);
+    fs::copy(&source_path, &stored_path).map_err(|error| format!("保存附件失败: {error}"))?;
+
+    Ok(ManualAttachmentImportResult {
+        original_name,
+        stored_path: stored_path.to_string_lossy().to_string(),
+        content,
+    })
+}
+
+#[tauri::command]
 fn add_manual_hotspot(
     app: tauri::AppHandle,
     input: ManualHotspotInput,
@@ -1194,27 +1351,62 @@ fn add_manual_hotspot(
     if input.title.trim().is_empty() {
         return Err("热点标题不能为空".into());
     }
-    if input.url.trim().is_empty() {
-        return Err("来源链接不能为空".into());
+    let source_file_path = input
+        .source_file_path
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let source_file_name = input
+        .source_file_name
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let explicit_url = input.url.trim().to_string();
+    let source_url = if let Some(path) = source_file_path.clone() {
+        path
+    } else if !explicit_url.is_empty() {
+        explicit_url
+    } else {
+        return Err("来源文件或来源链接不能为空".into());
+    };
+
+    let publisher = input
+        .publisher
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| source_file_name.clone())
+        .unwrap_or_else(|| "Manual Source".into());
+    let source_title = source_file_name.clone().unwrap_or_else(|| input.title.clone());
+    let content = input.content.clone().unwrap_or_default();
+    let summary = if input.summary.trim().is_empty() {
+        if content.trim().is_empty() {
+            "手动补充热点，等待编辑补充背景说明。".into()
+        } else {
+            truncate(&content.split_whitespace().collect::<Vec<_>>().join(" "), 260)
+        }
+    } else {
+        input.summary.clone()
+    };
+    let note = if content.trim().is_empty() {
+        Some("用户手动补充".into())
+    } else {
+        Some(content)
+    };
+
+    if source_file_path.is_some() && !Path::new(&source_url).exists() {
+        return Err("来源文件保存位置不存在，请重新上传附件".into());
     }
 
-    let publisher = input.publisher.unwrap_or_else(|| "Manual Source".into());
     let category = input.category.unwrap_or_else(|| "other".into());
     let source = Source {
-        id: stable_id("src", &input.url),
-        title: input.title.clone(),
-        url: input.url.clone(),
+        id: stable_id("src", &source_url),
+        title: source_title,
+        url: source_url.clone(),
         publisher,
         published_at: Some(now()),
     };
     let candidate = HotspotCandidate {
-        id: stable_id("manual", &format!("{}{}", input.title, input.url)),
+        id: stable_id("manual", &format!("{}{}", input.title, source_url)),
         title: input.title,
-        summary: if input.summary.trim().is_empty() {
-            "手动补充热点，等待编辑补充背景说明。".into()
-        } else {
-            input.summary
-        },
+        summary,
         category,
         score: 80,
         status: "shortlisted".into(),
@@ -1222,7 +1414,7 @@ fn add_manual_hotspot(
         sources: vec![source],
         matched_signals: vec!["manual".into()],
         created_at: now(),
-        note: Some("用户手动补充".into()),
+        note,
     };
 
     let path = candidates_path(&app)?;
@@ -3081,6 +3273,7 @@ pub fn run() {
             get_app_data_dir,
             save_feeds,
             search_hotspots,
+            import_manual_attachment,
             add_manual_hotspot,
             generate_roundtable_plan,
             generate_episode_draft,

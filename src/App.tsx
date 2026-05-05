@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { defaultWindowIcon } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import {
@@ -32,6 +32,7 @@ import {
   getProviderSettings,
   getTtsSettings,
   getFeeds,
+  importManualAttachment,
   listEpisodeDrafts,
   openExternalUrl,
   refreshModelCatalog as refreshModelCatalogFromBackend,
@@ -45,6 +46,7 @@ import {
   writeBinaryFile,
   writeTextFile
 } from "./lib/tauriClient";
+import type { ManualAttachmentImportResult, ManualHotspotInput } from "./lib/tauriClient";
 import type { EpisodeDraft, FeedSource, GenerationJob, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan, TtsSettings } from "./types";
 
 const RSS_PRESETS: FeedSource[] = [
@@ -302,7 +304,7 @@ function App() {
     }
   }
 
-  async function handleManualAdd(input: { title: string; summary: string; url: string; publisher?: string }) {
+  async function handleManualAdd(input: ManualHotspotInput) {
     try {
       setJob({ id: "job-manual", type: "save", status: "running", message: "正在写入手动补充热点" });
       const candidate = await addManualHotspot({ ...input, category: "other" });
@@ -313,6 +315,18 @@ function App() {
       setActiveView("workbench");
     } catch (error) {
       setJob({ id: "job-manual", type: "save", status: "failed", message: formatError(error, "手动热点写入失败") });
+    }
+  }
+
+  async function importManualAttachmentFile(path: string): Promise<ManualAttachmentImportResult> {
+    try {
+      setJob({ id: "job-manual-attachment", type: "fetch", status: "running", message: "正在解析附件并保存到本地" });
+      const result = await importManualAttachment(path);
+      setJob({ id: "job-manual-attachment", type: "fetch", status: "succeeded", message: `附件解析完成，已保存到：${result.storedPath}` });
+      return result;
+    } catch (error) {
+      setJob({ id: "job-manual-attachment", type: "fetch", status: "failed", message: formatError(error, "附件解析失败") });
+      throw error;
     }
   }
 
@@ -645,7 +659,7 @@ function App() {
               />
             )}
             {activeView === "feeds" && <Feeds feeds={feeds} onAddFeed={addFeed} onRefresh={loadFeeds} onToggleFeed={toggleFeed} />}
-            {activeView === "manual" && <ManualInput onSubmit={handleManualAdd} />}
+            {activeView === "manual" && <ManualInput onImportAttachment={importManualAttachmentFile} onSubmit={handleManualAdd} />}
             {activeView === "plan" && (
               <PlanView
                 onGenerateDraft={generateDraft}
@@ -710,6 +724,12 @@ function formatError(error: unknown, fallback: string) {
   if (typeof error === "string") return `${fallback}: ${error}`;
   if (error instanceof Error) return `${fallback}: ${error.message}`;
   return fallback;
+}
+
+function compactText(value: string, maxLength: number) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength).trimEnd()}...`;
 }
 
 function toDateInputValue(date: Date) {
@@ -1338,22 +1358,90 @@ function Feeds({
   );
 }
 
-function ManualInput({ onSubmit }: { onSubmit: (input: { title: string; summary: string; url: string; publisher?: string }) => void }) {
+function ManualInput({
+  onImportAttachment,
+  onSubmit
+}: {
+  onImportAttachment: (path: string) => Promise<ManualAttachmentImportResult>;
+  onSubmit: (input: ManualHotspotInput) => void;
+}) {
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState("");
   const [url, setUrl] = useState("");
   const [publisher, setPublisher] = useState("");
+  const [content, setContent] = useState("");
+  const [sourceFileName, setSourceFileName] = useState("");
+  const [sourceFilePath, setSourceFilePath] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+
+  async function pickAttachment() {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        filters: [
+          {
+            name: "常见文档",
+            extensions: ["pdf", "docx", "md", "markdown", "txt", "text"]
+          }
+        ]
+      });
+      if (typeof selected !== "string") return;
+
+      setIsImporting(true);
+      const result = await onImportAttachment(selected);
+      setContent(result.content);
+      setSourceFileName(result.originalName);
+      setSourceFilePath(result.storedPath);
+      setUrl(result.storedPath);
+      setPublisher(result.originalName);
+      if (!summary.trim()) {
+        setSummary(compactText(result.content, 260));
+      }
+      if (!title.trim()) {
+        setTitle(result.originalName.replace(/\.[^.]+$/, ""));
+      }
+    } catch (error) {
+      window.alert(formatError(error, "附件解析失败"));
+    } finally {
+      setIsImporting(false);
+    }
+  }
 
   return (
     <form
       className="formPanel"
       onSubmit={(event) => {
         event.preventDefault();
-        onSubmit({ title, summary, url, publisher: publisher || undefined });
+        onSubmit({
+          title,
+          summary,
+          url,
+          publisher: publisher || undefined,
+          content: content.trim() || undefined,
+          sourceFileName: sourceFileName || undefined,
+          sourceFilePath: sourceFilePath || undefined
+        });
       }}
     >
       <p className="eyebrow">手动补充</p>
       <h2>补充一个 RSS 未覆盖的热点</h2>
+      <div className="manualAttachmentPanel">
+        <div>
+          <strong>附件导入</strong>
+          <span>支持 PDF、DOCX、MD、TXT，解析后会保存文件并回填到内容框</span>
+        </div>
+        <button className="ghostButton" disabled={isImporting} onClick={pickAttachment} type="button">
+          <FileText size={16} />
+          {isImporting ? "解析中" : "上传附件"}
+        </button>
+        {sourceFilePath && (
+          <p className="manualAttachmentPath">
+            来源文件：<strong>{sourceFileName}</strong>
+            <br />
+            已保存到：<code>{sourceFilePath}</code>
+          </p>
+        )}
+      </div>
       <label>
         热点标题
         <input onChange={(event) => setTitle(event.target.value)} placeholder="例如：某模型发布、融资、论文或监管事件" value={title} />
@@ -1363,8 +1451,17 @@ function ManualInput({ onSubmit }: { onSubmit: (input: { title: string; summary:
         <textarea onChange={(event) => setSummary(event.target.value)} placeholder="写下你已经知道的事实、疑问和希望圆桌重点讨论的角度。" rows={7} value={summary} />
       </label>
       <label>
-        来源链接
-        <input onChange={(event) => setUrl(event.target.value)} placeholder="https://..." value={url} />
+        内容
+        <textarea
+          className="manualContentInput"
+          onChange={(event) => setContent(event.target.value)}
+          placeholder="可以直接输入完整材料；上传附件解析成功后，文本会自动填入这里，并且仍然可以编辑。"
+          value={content}
+        />
+      </label>
+      <label>
+        {sourceFilePath ? "来源文件" : "来源链接"}
+        <input onChange={(event) => setUrl(event.target.value)} placeholder={sourceFilePath ? "本地来源文件路径" : "https://..."} value={url} />
       </label>
       <label>
         来源名称
@@ -1784,6 +1881,14 @@ function activityProgress(job: GenerationJob, mode: "single" | "multi_agent", el
       title: "正在生成圆桌议程",
       detail: elapsed < 8 ? "正在检查来源和热点背景" : "正在组织议程、争议点和事实风险",
       percent: Math.min(90, 28 + elapsed * 4)
+    };
+  }
+
+  if (job.id === "job-manual-attachment") {
+    return {
+      title: "正在解析附件",
+      detail: elapsed < 4 ? "正在读取并解析文件内容" : "正在保存来源文件到本地内容目录",
+      percent: Math.min(92, 18 + elapsed * 8)
     };
   }
 

@@ -5,7 +5,7 @@
   "identifier": "com.ai.roundtable",
   "build": {
     "beforeDevCommand": "node scripts/run-npm.mjs dev",
-    "devUrl": "http://127.0.0.1:1420",
+    "devUrl": "http://127.0.0.1:5173",
     "beforeBuildCommand": "node scripts/run-npm.mjs build",
     "frontendDist": "../dist"
   },

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type { EpisodeDraft, FeedSource, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan, TtsSettings } from "../types";
 
 export type ManualHotspotInput = {
@@ -8,6 +8,15 @@ export type ManualHotspotInput = {
   url: string;
   publisher?: string;
   category?: string;
+  content?: string;
+  sourceFilePath?: string;
+  sourceFileName?: string;
+};
+
+export type ManualAttachmentImportResult = {
+  originalName: string;
+  storedPath: string;
+  content: string;
 };
 
 export function getFeeds() {
@@ -28,6 +37,10 @@ export function searchHotspots() {
 
 export function addManualHotspot(input: ManualHotspotInput) {
   return invoke<HotspotCandidate>("add_manual_hotspot", { input });
+}
+
+export function importManualAttachment(path: string) {
+  return invoke<ManualAttachmentImportResult>("import_manual_attachment", { path });
 }
 
 export function generateRoundtablePlan(hotspot: HotspotCandidate, settings?: ProviderSettings) {
@@ -91,5 +104,8 @@ export function listEpisodeDrafts() {
 }
 
 export function openExternalUrl(url: string) {
+  if (/^[a-zA-Z]:[\\/]/.test(url) || url.startsWith("\\\\") || url.startsWith("/")) {
+    return openPath(url);
+  }
   return openUrl(url);
 }
