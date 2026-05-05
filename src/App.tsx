@@ -24,11 +24,13 @@ import {
 } from "lucide-react";
 import {
   addManualHotspot,
+  exportEpisodeMp3,
   generateEpisodeDraft,
   generateRoundtablePlan,
   getAppDataDir,
   getModelCatalog,
   getProviderSettings,
+  getTtsSettings,
   getFeeds,
   listEpisodeDrafts,
   openExternalUrl,
@@ -36,12 +38,14 @@ import {
   saveEpisodeDraft,
   saveFeeds,
   saveProviderSettings,
+  saveTtsSettings,
   searchHotspots,
   validateProviderConnection,
+  validateTtsConnection,
   writeBinaryFile,
   writeTextFile
 } from "./lib/tauriClient";
-import type { EpisodeDraft, FeedSource, GenerationJob, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan } from "./types";
+import type { EpisodeDraft, FeedSource, GenerationJob, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan, TtsSettings } from "./types";
 
 const RSS_PRESETS: FeedSource[] = [
   { id: "openai-blog", name: "OpenAI Blog", url: "https://openai.com/news/rss.xml", category: "company", enabled: true, lastStatus: "idle" },
@@ -75,6 +79,34 @@ const navItems = [
 ];
 
 const DEFAULT_PROVIDER_ID = "deepseek";
+const DEFAULT_TTS_SETTINGS: TtsSettings = {
+  providerId: "dashscope",
+  baseUrl: "https://dashscope.aliyuncs.com/api/v1",
+  apiKey: "",
+  selectedModel: "MiniMax/speech-2.8-hd"
+};
+const TTS_PROVIDER_OPTIONS: Array<{
+  id: TtsSettings["providerId"];
+  name: string;
+  baseUrl: string;
+  models: string[];
+  apiKeyPlaceholder: string;
+}> = [
+  {
+    id: "openai",
+    name: "OpenAI TTS",
+    baseUrl: "https://api.openai.com/v1",
+    models: ["gpt-4o-mini-tts", "gpt-4o-mini-tts-2025-12-15", "tts-1", "tts-1-hd"],
+    apiKeyPlaceholder: "输入 OpenAI API Key；MP3 导出前会检查 TTS 模型连通性"
+  },
+  {
+    id: "dashscope",
+    name: "DashScope TTS",
+    baseUrl: "https://dashscope.aliyuncs.com/api/v1",
+    models: ["MiniMax/speech-2.8-hd", "cosyvoice-v3.5-plus"],
+    apiKeyPlaceholder: "输入 DashScope API Key；也就是 DASHSCOPE_API_KEY 对应的密钥"
+  }
+];
 
 function App() {
   const [activeView, setActiveView] = useState("workbench");
@@ -93,6 +125,7 @@ function App() {
   }));
   const [modelCatalog, setModelCatalog] = useState<ModelProvider[]>([]);
   const [providerSettings, setProviderSettings] = useState<ProviderSettings[]>([]);
+  const [ttsSettings, setTtsSettings] = useState<TtsSettings>(DEFAULT_TTS_SETTINGS);
   const [selectedProviderId, setSelectedProviderId] = useState(DEFAULT_PROVIDER_ID);
   const [selectedModel, setSelectedModel] = useState("deepseek-chat");
   const [draftGenerationMode, setDraftGenerationMode] = useState<"single" | "multi_agent">("single");
@@ -136,10 +169,11 @@ function App() {
     void (async () => {
       try {
         setJob({ id: "job-init", type: "fetch", status: "running", message: "正在连接 Tauri 后端" });
-        const [feedResult, catalogResult, settingsResult, historyResult, appDataDirResult] = await Promise.all([
+        const [feedResult, catalogResult, settingsResult, ttsSettingsResult, historyResult, appDataDirResult] = await Promise.all([
           getFeeds(),
           getModelCatalog(),
           getProviderSettings(),
+          getTtsSettings(),
           listEpisodeDrafts(),
           getAppDataDir()
         ]);
@@ -157,6 +191,7 @@ function App() {
         }
         setModelCatalog(nextCatalog);
         setProviderSettings(settingsResult);
+        setTtsSettings(ttsSettingsResult);
         setHistoryDrafts(historyResult);
         const provider = nextCatalog.find((item) => item.id === DEFAULT_PROVIDER_ID) ?? nextCatalog[0];
         if (provider) {
@@ -430,6 +465,25 @@ function App() {
     }
   }
 
+  async function saveTtsAudioSettings(settings: TtsSettings) {
+    let settingsSaved = false;
+    try {
+      setJob({ id: "job-tts-save", type: "save", status: "running", message: "正在保存 TTS 配音设置" });
+      const saved = await saveTtsSettings(settings);
+      settingsSaved = true;
+      setTtsSettings(saved);
+      setJob({ id: "job-tts-check", type: "fetch", status: "running", message: "正在检查 TTS 模型连接" });
+      const connectionMessage = await validateTtsConnection(saved);
+      setJob({ id: "job-tts", type: "fetch", status: "succeeded", message: connectionMessage });
+    } catch (error) {
+      const fallback = settingsSaved ? "TTS 设置已保存，但模型连接检查失败" : "保存 TTS 设置失败";
+      const message = formatError(error, fallback);
+      setJob({ id: "job-tts", type: "fetch", status: "failed", message });
+      setActiveView("settings");
+      window.alert(`${message}\n\n请检查 TTS 页签里的厂商、Base URL、API Key 和模型。`);
+    }
+  }
+
   async function ensureLlmConnected(settings: ProviderSettings, fallback: string) {
     try {
       setJob({ id: "job-llm-check", type: "fetch", status: "running", message: "正在检查模型连接" });
@@ -630,9 +684,11 @@ function App() {
                 onRefreshFromProvider={refreshModelsFromProvider}
                 onRefreshModels={refreshModelCatalog}
                 onSaveSettings={saveSettings}
+                onSaveTtsSettings={saveTtsAudioSettings}
                 providerSettings={providerSettings}
                 selectedModel={selectedModel}
                 selectedProviderId={selectedProviderId}
+                ttsSettings={ttsSettings}
               />
             )}
           </section>
@@ -861,12 +917,13 @@ async function draftToPdfBase64(draft: EpisodeDraft) {
   }
 }
 
-async function saveDraftAs(draft: EpisodeDraft, format: "md" | "html" | "pdf") {
+async function saveDraftAs(draft: EpisodeDraft, format: "md" | "html" | "pdf" | "mp3") {
   const baseName = fileSafeName(draft.title);
   const filters = {
     md: [{ name: "Markdown", extensions: ["md"] }],
     html: [{ name: "HTML", extensions: ["html"] }],
-    pdf: [{ name: "PDF", extensions: ["pdf"] }]
+    pdf: [{ name: "PDF", extensions: ["pdf"] }],
+    mp3: [{ name: "MP3 Audio", extensions: ["mp3"] }]
   }[format];
   const selectedPath = await saveDialog({
     defaultPath: `${baseName}.${format}`,
@@ -877,6 +934,11 @@ async function saveDraftAs(draft: EpisodeDraft, format: "md" | "html" | "pdf") {
   if (format === "pdf") {
     const base64Pdf = await draftToPdfBase64(draft);
     await writeBinaryFile(selectedPath, base64Pdf);
+    return selectedPath;
+  }
+
+  if (format === "mp3") {
+    await exportEpisodeMp3(draft, selectedPath);
     return selectedPath;
   }
 
@@ -1525,9 +1587,12 @@ function HistoryDraftDetail({
     }));
   }
 
-  async function handleExport(format: "md" | "html" | "pdf") {
+  async function handleExport(format: "md" | "html" | "pdf" | "mp3") {
     setExportMenuOpen(false);
-    setExportStatus({ status: "saving", message: "保存中，请选择文件保存位置。" });
+    setExportStatus({
+      status: "saving",
+      message: format === "mp3" ? "保存中，请选择文件保存位置；MP3 会依次生成角色语音、混入开场和闭场音乐。" : "保存中，请选择文件保存位置。"
+    });
     try {
       const path = await saveDraftAs(editableDraft, format);
       if (!path) {
@@ -1581,6 +1646,13 @@ function HistoryDraftDetail({
                   <span>
                     <strong>PDF</strong>
                     <small>内部生成 PDF 并保存</small>
+                  </span>
+                </button>
+                <button onClick={() => { void handleExport("mp3"); }} type="button">
+                  <Download size={16} />
+                  <span>
+                    <strong>MP3 圆桌录音</strong>
+                    <small>开场音乐、分角色语音和闭场音乐</small>
                   </span>
                 </button>
               </div>
@@ -1731,6 +1803,14 @@ function activityProgress(job: GenerationJob, mode: "single" | "multi_agent", el
     };
   }
 
+  if (job.id === "job-tts-check") {
+    return {
+      title: "正在检查 TTS 模型",
+      detail: elapsed < 5 ? "正在请求一段极短的测试语音" : "正在等待 TTS 服务返回音频",
+      percent: Math.min(90, 28 + elapsed * 6)
+    };
+  }
+
   return {
     title: "正在保存",
     detail: "正在写入本地 JSON",
@@ -1748,9 +1828,11 @@ function SettingsView({
   onRefreshFromProvider,
   onRefreshModels,
   onSaveSettings,
+  onSaveTtsSettings,
   providerSettings,
   selectedModel,
-  selectedProviderId
+  selectedProviderId,
+  ttsSettings
 }: {
   appDataDir: string;
   draftGenerationMode: "single" | "multi_agent";
@@ -1761,19 +1843,34 @@ function SettingsView({
   onRefreshFromProvider: (settings: ProviderSettings) => void;
   onRefreshModels: () => void;
   onSaveSettings: (settings: ProviderSettings) => void;
+  onSaveTtsSettings: (settings: TtsSettings) => void;
   providerSettings: ProviderSettings[];
   selectedModel: string;
   selectedProviderId: string;
+  ttsSettings: TtsSettings;
 }) {
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"roundtable" | "tts">("roundtable");
   const provider = modelCatalog.find((item) => item.id === selectedProviderId);
   const savedSettings = providerSettings.find((item) => item.providerId === selectedProviderId);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
+  const [ttsProviderId, setTtsProviderId] = useState<TtsSettings["providerId"]>(ttsSettings.providerId);
+  const [ttsApiKey, setTtsApiKey] = useState(ttsSettings.apiKey ?? "");
+  const [ttsBaseUrl, setTtsBaseUrl] = useState(ttsSettings.baseUrl);
+  const [ttsModel, setTtsModel] = useState(ttsSettings.selectedModel);
+  const ttsProvider = TTS_PROVIDER_OPTIONS.find((item) => item.id === ttsProviderId) ?? TTS_PROVIDER_OPTIONS[0];
 
   useEffect(() => {
     setApiKey(savedSettings?.apiKey ?? "");
     setBaseUrl(savedSettings?.baseUrl ?? provider?.baseUrl ?? "");
   }, [provider?.baseUrl, savedSettings?.apiKey, savedSettings?.baseUrl, selectedProviderId]);
+
+  useEffect(() => {
+    setTtsProviderId(ttsSettings.providerId);
+    setTtsApiKey(ttsSettings.apiKey ?? "");
+    setTtsBaseUrl(ttsSettings.baseUrl);
+    setTtsModel(ttsSettings.selectedModel);
+  }, [ttsSettings.apiKey, ttsSettings.baseUrl, ttsSettings.providerId, ttsSettings.selectedModel]);
 
   const currentSettings: ProviderSettings = {
     providerId: selectedProviderId,
@@ -1782,70 +1879,149 @@ function SettingsView({
     selectedModel,
     draftGenerationMode
   };
+  const normalizedTtsModel =
+    ttsProvider.models.includes(ttsModel) || ttsProvider.id !== "dashscope" ? ttsModel : ttsProvider.models[0] ?? ttsModel;
+  const currentTtsSettings: TtsSettings = {
+    providerId: ttsProviderId,
+    baseUrl: ttsBaseUrl,
+    apiKey: ttsApiKey,
+    selectedModel: normalizedTtsModel
+  };
+  const ttsModelOptions = ttsProvider.id === "dashscope" || ttsProvider.models.includes(ttsModel) ? ttsProvider.models : [ttsModel, ...ttsProvider.models];
+  function handleTtsProviderChange(providerId: TtsSettings["providerId"]) {
+    const nextProvider = TTS_PROVIDER_OPTIONS.find((item) => item.id === providerId) ?? TTS_PROVIDER_OPTIONS[0];
+    setTtsProviderId(providerId);
+    setTtsBaseUrl(nextProvider.baseUrl);
+    setTtsModel(nextProvider.models[0] ?? "");
+    setTtsApiKey(ttsSettings.providerId === providerId ? ttsSettings.apiKey ?? "" : "");
+  }
 
   return (
     <div className="formPanel">
       <p className="eyebrow">设置</p>
-      <section className="sectionHeader compactHeader">
-        <div>
-          <h2>模型厂商与模型选择</h2>
-          <p className="sectionMeta">默认使用 DeepSeek；启动时会加载内置厂商列表，并在本地已保存 API Key 时刷新当前厂商模型。</p>
-        </div>
-        <div className="buttonGroup">
-          <button className="ghostButton" onClick={onRefreshModels} type="button">
-            <RefreshCcw size={16} />
-            重置内置列表
+      <div className="segmentedTabs settingsTabs" role="tablist" aria-label="模型设置分类">
+        <button className={activeSettingsTab === "roundtable" ? "active" : ""} onClick={() => setActiveSettingsTab("roundtable")} type="button">
+          圆桌模型
+        </button>
+        <button className={activeSettingsTab === "tts" ? "active" : ""} onClick={() => setActiveSettingsTab("tts")} type="button">
+          TTS 配音
+        </button>
+      </div>
+
+      {activeSettingsTab === "roundtable" ? (
+        <>
+          <section className="sectionHeader compactHeader">
+            <div>
+              <h2>圆桌模型配置</h2>
+              <p className="sectionMeta">用于生成圆桌议程和圆桌稿；默认 DeepSeek，保存后会刷新当前厂商模型。</p>
+            </div>
+            <div className="buttonGroup">
+              <button className="ghostButton" onClick={onRefreshModels} type="button">
+                <RefreshCcw size={16} />
+                重置内置列表
+              </button>
+              <button className="primaryButton" onClick={() => onRefreshFromProvider(currentSettings)} type="button">
+                <RefreshCcw size={16} />
+                更新模型
+              </button>
+            </div>
+          </section>
+          <label>
+            厂商
+            <select value={selectedProviderId} onChange={(event) => onProviderChange(event.target.value)}>
+              {modelCatalog.map((item) => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            模型
+            <select value={selectedModel} onChange={(event) => onModelChange(event.target.value)}>
+              {(provider?.models ?? []).map((model) => (
+                <option key={model} value={model}>{model}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Base URL
+            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+          </label>
+          <label>
+            API Key
+            <input
+              autoComplete="off"
+              placeholder={provider?.requiresApiKey ? "输入后本地保存，界面不会明文展示完整 key" : "本地生成器不需要 API Key"}
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+            />
+          </label>
+          <label>
+            稿件生成模式
+            <select
+              value={draftGenerationMode}
+              onChange={(event) => onDraftGenerationModeChange(event.target.value as "single" | "multi_agent")}
+            >
+              <option value="single">一个模型直接生成整稿</option>
+              <option value="multi_agent">中控调度，多次调用嘉宾独立发言</option>
+            </select>
+          </label>
+          <button className="ghostButton" onClick={() => onSaveSettings(currentSettings)} type="button">
+            <Save size={16} />
+            保存圆桌模型设置
           </button>
-          <button className="primaryButton" onClick={() => onRefreshFromProvider(currentSettings)} type="button">
-            <RefreshCcw size={16} />
-            更新模型
-          </button>
-        </div>
-      </section>
-      <label>
-        厂商
-        <select value={selectedProviderId} onChange={(event) => onProviderChange(event.target.value)}>
-          {modelCatalog.map((item) => (
-            <option key={item.id} value={item.id}>{item.name}</option>
-          ))}
-        </select>
-      </label>
-      <label>
-        模型
-        <select value={selectedModel} onChange={(event) => onModelChange(event.target.value)}>
-          {(provider?.models ?? []).map((model) => (
-            <option key={model} value={model}>{model}</option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Base URL
-        <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
-      </label>
-      <label>
-        API Key
-        <input
-          autoComplete="off"
-          placeholder={provider?.requiresApiKey ? "输入后本地保存，界面不会明文展示完整 key" : "本地生成器不需要 API Key"}
-          type="password"
-          value={apiKey}
-          onChange={(event) => setApiKey(event.target.value)}
-        />
-      </label>
-      <label>
-        稿件生成模式
-        <select
-          value={draftGenerationMode}
-          onChange={(event) => onDraftGenerationModeChange(event.target.value as "single" | "multi_agent")}
-        >
-          <option value="single">一个模型直接生成整稿</option>
-          <option value="multi_agent">中控调度，多次调用嘉宾独立发言</option>
-        </select>
-      </label>
-      <button className="ghostButton" onClick={() => onSaveSettings(currentSettings)} type="button">
-        <Save size={16} />
-        保存设置
-      </button>
+        </>
+      ) : (
+        <>
+          <section className="sectionHeader compactHeader">
+            <div>
+              <h2>TTS 配音模型配置</h2>
+              <p className="sectionMeta">用于导出 MP3 圆桌录音。保存后会立即生成一小段测试音频来检查模型连通性。</p>
+            </div>
+            <div className="buttonGroup">
+              <button className="primaryButton" onClick={() => onSaveTtsSettings(currentTtsSettings)} type="button">
+                <Save size={16} />
+                保存并检查 TTS
+              </button>
+            </div>
+          </section>
+          <label>
+            TTS 厂商
+            <select value={ttsProviderId} onChange={(event) => handleTtsProviderChange(event.target.value as TtsSettings["providerId"])}>
+              {TTS_PROVIDER_OPTIONS.map((item) => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            TTS 模型
+            <select value={normalizedTtsModel} onChange={(event) => setTtsModel(event.target.value)}>
+              {ttsModelOptions.map((model) => (
+                <option key={model} value={model}>{model}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            TTS Base URL
+            <input value={ttsBaseUrl} onChange={(event) => setTtsBaseUrl(event.target.value)} />
+          </label>
+          <label>
+            TTS API Key
+            <input
+              autoComplete="off"
+              placeholder={ttsProvider.apiKeyPlaceholder}
+              type="password"
+              value={ttsApiKey}
+              onChange={(event) => setTtsApiKey(event.target.value)}
+            />
+          </label>
+          <p className="mutedText">不同角色的声音和朗读要求配置在 <code>config/prompts/personas.json</code> 的 <code>tts</code> 字段里；这里仅配置 TTS 服务和模型。</p>
+          {ttsProviderId === "dashscope" && normalizedTtsModel === "cosyvoice-v3.5-plus" && (
+            <p className="mutedText">CosyVoice v3.5 plus 如果提示音色不可用，需要在 <code>personas.json</code> 的 <code>cosyVoice</code> 字段填写你在百炼里创建的声音复刻或声音设计音色 ID。</p>
+          )}
+        </>
+      )}
+
       <label>
         本地内容目录
         <input value={appDataDir || "正在读取本机 app data 目录"} readOnly />

@@ -40,6 +40,14 @@ export type GuestPersona = {
   role: string;
   stance: string;
   speakingStyle: string;
+  tts?: {
+    voice: string;
+    dashscopeVoice?: string;
+    minimaxVoice?: string;
+    cosyVoice?: string;
+    qwenVoice?: string;
+    instructions: string;
+  };
 };
 
 export type RoundtablePlan = {
@@ -97,4 +105,11 @@ export type ProviderSettings = {
   apiKey?: string;
   selectedModel?: string;
   draftGenerationMode?: "single" | "multi_agent";
+};
+
+export type TtsSettings = {
+  providerId: "openai" | "dashscope";
+  baseUrl: string;
+  apiKey?: string;
+  selectedModel: string;
 };

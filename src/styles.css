@@ -795,6 +795,10 @@ button {
   background: #55f0dd;
 }
 
+.settingsTabs {
+  justify-self: start;
+}
+
 .feedSearchInput {
   width: 100%;
   min-height: 38px;

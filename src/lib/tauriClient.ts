@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { EpisodeDraft, FeedSource, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan } from "../types";
+import type { EpisodeDraft, FeedSource, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan, TtsSettings } from "../types";
 
 export type ManualHotspotInput = {
   title: string;
@@ -50,6 +50,10 @@ export function writeBinaryFile(path: string, base64Content: string) {
   return invoke<string>("write_binary_file", { path, base64Content });
 }
 
+export function exportEpisodeMp3(draft: EpisodeDraft, path: string) {
+  return invoke<string>("export_episode_mp3", { draft, path });
+}
+
 export function getModelCatalog() {
   return invoke<ModelProvider[]>("get_model_catalog");
 }
@@ -68,6 +72,18 @@ export function getProviderSettings() {
 
 export function saveProviderSettings(settings: ProviderSettings) {
   return invoke<ProviderSettings[]>("save_provider_settings", { settings });
+}
+
+export function getTtsSettings() {
+  return invoke<TtsSettings>("get_tts_settings");
+}
+
+export function saveTtsSettings(settings: TtsSettings) {
+  return invoke<TtsSettings>("save_tts_settings", { settings });
+}
+
+export function validateTtsConnection(settings: TtsSettings) {
+  return invoke<string>("validate_tts_connection", { settings });
 }
 
 export function listEpisodeDrafts() {
