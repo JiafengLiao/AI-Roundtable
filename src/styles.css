@@ -728,6 +728,47 @@ button {
   resize: vertical;
 }
 
+.agentPrepPanel {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgba(85, 240, 221, 0.16);
+  border-radius: 8px;
+  background: rgba(10, 24, 27, 0.58);
+}
+
+.agentPrepPanel label,
+.supplementalDocs {
+  display: grid;
+  gap: 8px;
+}
+
+.supplementalDocs strong,
+.supplementalDocs span {
+  display: block;
+}
+
+.supplementalDocs span {
+  color: #8ea0a7;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.supplementalDocList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.supplementalDocList span {
+  padding: 6px 8px;
+  border: 1px solid rgba(151, 174, 180, 0.16);
+  border-radius: 7px;
+  color: #d8e7ea;
+  background: rgba(17, 24, 30, 0.72);
+}
+
 .filterPanel {
   display: grid;
   gap: 10px;
@@ -971,9 +1012,91 @@ button {
   padding: 14px;
 }
 
+.turnBody {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .turn p,
 .takeaways p {
   margin: 0;
+}
+
+.inlineDraftProgress {
+  display: grid;
+  gap: 10px;
+  padding: 13px 14px;
+  border: 1px solid rgba(85, 240, 221, 0.18);
+  border-radius: 8px;
+  background: rgba(10, 24, 27, 0.58);
+}
+
+.inlineDraftProgressTop {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.inlineDraftProgressTop strong,
+.inlineDraftProgressTop p {
+  display: block;
+  margin: 0;
+}
+
+.inlineDraftProgressTop p {
+  margin-top: 4px;
+  color: #a9b8bd;
+  font-size: 13px;
+}
+
+.turnProgressLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  color: #a9b8bd;
+  font-size: 12px;
+}
+
+.turnProgressLine strong {
+  color: #d8e7ea;
+}
+
+.turnProgressLine small {
+  color: #8ea0a7;
+}
+
+.pendingTurn {
+  border-style: dashed;
+  background: rgba(10, 24, 27, 0.48);
+}
+
+.streamingDraftEmpty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 68px;
+  padding: 14px;
+  border: 1px dashed rgba(85, 240, 221, 0.24);
+  border-radius: 8px;
+  color: #a9b8bd;
+  background: rgba(10, 24, 27, 0.42);
+}
+
+.streamingDraftEmpty p {
+  margin: 0;
+}
+
+.inlineSpinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(85, 240, 221, 0.18);
+  border-top-color: #55f0dd;
+  border-radius: 999px;
+  animation: spin 0.9s linear infinite;
+  flex: 0 0 auto;
 }
 
 .takeaways p {
@@ -1039,6 +1162,159 @@ button {
 
 .historySources h3 {
   margin: 0;
+}
+
+.agentTraceSection {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.13);
+  border-radius: 8px;
+  background: rgba(10, 15, 19, 0.62);
+}
+
+.agentTraceSection summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.agentTraceSection summary::-webkit-details-marker {
+  display: none;
+}
+
+.agentTraceSection summary strong,
+.agentTraceSection summary small {
+  display: block;
+}
+
+.agentTraceSection summary small {
+  margin-top: 4px;
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
+.agentTraceSection summary em {
+  color: #55f0dd;
+  font-style: normal;
+  font-size: 12px;
+}
+
+.agentTraceSection[open] summary em {
+  color: #a9b8bd;
+}
+
+.agentTraceSection[open] summary em::before {
+  content: "收起";
+}
+
+.agentTraceSection[open] summary em {
+  font-size: 0;
+}
+
+.agentTraceSection[open] summary em::before {
+  font-size: 12px;
+}
+
+.agentTraceList {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.agentTraceItem {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.13);
+  border-radius: 8px;
+  background: rgba(17, 24, 30, 0.72);
+}
+
+.agentTraceItem.warning {
+  border-color: rgba(247, 194, 86, 0.38);
+}
+
+.agentTraceItem.debug {
+  border-color: rgba(151, 174, 180, 0.26);
+}
+
+.traceItemHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.traceItemHeader small,
+.traceItemHeader time {
+  color: #8ea0a7;
+  font-size: 12px;
+}
+
+.traceLevel {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #05110f;
+  background: #55f0dd;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.traceLevel.warning {
+  background: #f7c256;
+}
+
+.traceLevel.debug {
+  color: #dbe5e9;
+  background: #2b3942;
+}
+
+.agentTraceItem p {
+  margin: 0;
+  color: #c8d5d9;
+  line-height: 1.65;
+}
+
+.agentTraceEmpty {
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid rgba(151, 174, 180, 0.12);
+  border-radius: 8px;
+  color: #8ea0a7;
+  background: rgba(17, 24, 30, 0.5);
+}
+
+.traceSourceList {
+  display: grid;
+  gap: 8px;
+}
+
+.traceSourceButton {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid rgba(85, 240, 221, 0.14);
+  border-radius: 8px;
+  color: #dbe5e9;
+  text-align: left;
+  background: rgba(17, 56, 58, 0.22);
+}
+
+.traceSourceButton:hover {
+  border-color: rgba(85, 240, 221, 0.34);
+  background: rgba(17, 56, 58, 0.34);
+}
+
+.traceSourceButton span {
+  color: #a9b8bd;
+  overflow-wrap: anywhere;
 }
 
 .detailHeader {
@@ -1328,6 +1604,75 @@ button {
   transition: width 0.24s ease;
 }
 
+.agentProgressPanel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.agentProgressToggle {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  color: #55f0dd;
+  background: transparent;
+  font-size: 12px;
+}
+
+.agentProgressGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.agentProgressCard {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(151, 174, 180, 0.14);
+  border-radius: 8px;
+  background: rgba(17, 24, 30, 0.72);
+}
+
+.agentProgressCard.warning,
+.agentProgressCard.failed {
+  border-color: rgba(247, 194, 86, 0.48);
+}
+
+.agentProgressCard strong,
+.agentProgressCard span {
+  display: block;
+}
+
+.agentProgressCard span,
+.agentProgressCard p,
+.streamingTurns p {
+  margin: 0;
+  color: #a9b8bd;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.streamingTurns {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid rgba(85, 240, 221, 0.14);
+  border-radius: 8px;
+  background: rgba(10, 24, 27, 0.58);
+}
+
+.checkboxLine {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.checkboxLine input {
+  width: auto;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1407,10 +1752,13 @@ button {
   .historyLayout,
   .feedAddPanel,
   .manualAttachmentPanel,
+  .agentPrepPanel,
+  .agentProgressGrid,
   .feedPresetToolbar,
   .presetFeedGrid,
   .sourceItem,
-  .sourceChip {
+  .sourceChip,
+  .traceSourceButton {
     grid-template-columns: 1fr;
   }
 

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { defaultWindowIcon } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import html2canvas from "html2canvas";
@@ -26,6 +27,8 @@ import {
   addManualHotspot,
   exportEpisodeMp3,
   generateEpisodeDraft,
+  generateAutonomousEpisodeDraft,
+  getAgentRuntimeSettings,
   generateRoundtablePlan,
   getAppDataDir,
   getModelCatalog,
@@ -38,6 +41,7 @@ import {
   refreshModelCatalog as refreshModelCatalogFromBackend,
   saveEpisodeDraft,
   saveFeeds,
+  saveAgentRuntimeSettings,
   saveProviderSettings,
   saveTtsSettings,
   searchHotspots,
@@ -47,7 +51,23 @@ import {
   writeTextFile
 } from "./lib/tauriClient";
 import type { ManualAttachmentImportResult, ManualHotspotInput } from "./lib/tauriClient";
-import type { EpisodeDraft, FeedSource, GenerationJob, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan, TtsSettings } from "./types";
+import type {
+  AgentProgressEvent,
+  AgentRuntimeSettings,
+  DialogueTurn,
+  DiscussionDepth,
+  DraftDeltaEvent,
+  DraftGenerationMode,
+  EpisodeDraft,
+  FeedSource,
+  GenerationJob,
+  HotspotCandidate,
+  ModelProvider,
+  ProviderSettings,
+  RoundtablePlan,
+  SupplementalDocument,
+  TtsSettings
+} from "./types";
 
 const RSS_PRESETS: FeedSource[] = [
   { id: "openai-blog", name: "OpenAI Blog", url: "https://openai.com/news/rss.xml", category: "company", enabled: true, lastStatus: "idle" },
@@ -86,6 +106,17 @@ const DEFAULT_TTS_SETTINGS: TtsSettings = {
   baseUrl: "https://dashscope.aliyuncs.com/api/v1",
   apiKey: "",
   selectedModel: "MiniMax/speech-2.8-hd"
+};
+const DEFAULT_AGENT_RUNTIME_SETTINGS: AgentRuntimeSettings = {
+  generationEngine: "native",
+  pythonAgentBaseUrl: "http://127.0.0.1:8787",
+  discussionDepth: "medium",
+  searchBaseUrl: "",
+  searchApiKey: "",
+  searchLanguage: "zh-CN",
+  searchMaxResults: 5,
+  searchRecencyDays: 14,
+  debugTraceEnabled: false
 };
 const TTS_PROVIDER_OPTIONS: Array<{
   id: TtsSettings["providerId"];
@@ -128,9 +159,16 @@ function App() {
   const [modelCatalog, setModelCatalog] = useState<ModelProvider[]>([]);
   const [providerSettings, setProviderSettings] = useState<ProviderSettings[]>([]);
   const [ttsSettings, setTtsSettings] = useState<TtsSettings>(DEFAULT_TTS_SETTINGS);
+  const [agentRuntimeSettings, setAgentRuntimeSettings] = useState<AgentRuntimeSettings>(DEFAULT_AGENT_RUNTIME_SETTINGS);
   const [selectedProviderId, setSelectedProviderId] = useState(DEFAULT_PROVIDER_ID);
   const [selectedModel, setSelectedModel] = useState("deepseek-chat");
-  const [draftGenerationMode, setDraftGenerationMode] = useState<"single" | "multi_agent">("single");
+  const [draftGenerationMode, setDraftGenerationMode] = useState<DraftGenerationMode>("single");
+  const [discussionDepth, setDiscussionDepth] = useState<DiscussionDepth>("medium");
+  const [supplementalDocuments, setSupplementalDocuments] = useState<SupplementalDocument[]>([]);
+  const [agentProgress, setAgentProgress] = useState<Record<string, AgentProgressEvent>>({});
+  const [streamingTurns, setStreamingTurns] = useState<DialogueTurn[]>([]);
+  const [activeAgentSessionId, setActiveAgentSessionId] = useState("");
+  const activeAgentSessionRef = useRef("");
   const [historyDrafts, setHistoryDrafts] = useState<EpisodeDraft[]>([]);
   const [selectedHistoryDraft, setSelectedHistoryDraft] = useState<EpisodeDraft | null>(null);
   const [appDataDir, setAppDataDir] = useState("");
@@ -171,11 +209,12 @@ function App() {
     void (async () => {
       try {
         setJob({ id: "job-init", type: "fetch", status: "running", message: "正在连接 Tauri 后端" });
-        const [feedResult, catalogResult, settingsResult, ttsSettingsResult, historyResult, appDataDirResult] = await Promise.all([
+        const [feedResult, catalogResult, settingsResult, ttsSettingsResult, agentSettingsResult, historyResult, appDataDirResult] = await Promise.all([
           getFeeds(),
           getModelCatalog(),
           getProviderSettings(),
           getTtsSettings(),
+          getAgentRuntimeSettings(),
           listEpisodeDrafts(),
           getAppDataDir()
         ]);
@@ -194,6 +233,8 @@ function App() {
         setModelCatalog(nextCatalog);
         setProviderSettings(settingsResult);
         setTtsSettings(ttsSettingsResult);
+        setAgentRuntimeSettings(agentSettingsResult);
+        setDiscussionDepth(agentSettingsResult.discussionDepth);
         setHistoryDrafts(historyResult);
         const provider = nextCatalog.find((item) => item.id === DEFAULT_PROVIDER_ID) ?? nextCatalog[0];
         if (provider) {
@@ -215,6 +256,75 @@ function App() {
     }
     setSelectedHotspotIds((current) => current.filter((id) => filteredHotspots.some((hotspot) => hotspot.id === id)));
   }, [filteredHotspots, selectedHotspot]);
+
+  useEffect(() => {
+    activeAgentSessionRef.current = activeAgentSessionId;
+  }, [activeAgentSessionId]);
+
+  useEffect(() => {
+    let cleanupProgress: (() => void) | undefined;
+    let cleanupDelta: (() => void) | undefined;
+    let cancelled = false;
+
+    void listen<AgentProgressEvent>("roundtable://agent-progress", (event) => {
+      const sessionId = activeAgentSessionRef.current;
+      if (!sessionId || event.payload.sessionId !== sessionId) return;
+      setAgentProgress((current) => ({
+        ...current,
+        [event.payload.agentId]: event.payload
+      }));
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        cleanupProgress = unlisten;
+      }
+    });
+
+    void listen<DraftDeltaEvent>("roundtable://draft-delta", (event) => {
+      const sessionId = activeAgentSessionRef.current;
+      if (!sessionId || event.payload.sessionId !== sessionId) return;
+      if (event.payload.kind === "turn" && event.payload.turn) {
+        const turn = event.payload.turn as DialogueTurn;
+        setStreamingTurns((current) => [...current, turn]);
+        setEpisodeDraft((current) =>
+          current
+            ? {
+                ...current,
+                dialogue: [...current.dialogue, turn],
+                updatedAt: new Date().toISOString()
+              }
+            : current
+        );
+      }
+      if (event.payload.kind === "token" && event.payload.turn && event.payload.textDelta) {
+        const turn = event.payload.turn as DialogueTurn;
+        const textDelta = event.payload.textDelta;
+        setStreamingTurns((current) => appendTokenToTurns(current, turn, textDelta));
+        setEpisodeDraft((current) =>
+          current
+            ? {
+                ...current,
+                dialogue: appendTokenToTurns(current.dialogue, turn, textDelta),
+                updatedAt: new Date().toISOString()
+              }
+            : current
+        );
+      }
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        cleanupDelta = unlisten;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      cleanupProgress?.();
+      cleanupDelta?.();
+    };
+  }, []);
 
   async function loadFeeds() {
     try {
@@ -330,6 +440,45 @@ function App() {
     }
   }
 
+  async function addSupplementalDocument() {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        filters: [
+          {
+            name: "圆桌补充资料",
+            extensions: ["pdf", "docx", "md", "markdown", "txt", "text"]
+          }
+        ]
+      });
+      if (typeof selected !== "string") return;
+      const imported = await importManualAttachmentFile(selected);
+      setSupplementalDocuments((current) => [
+        ...current,
+        {
+          id: `doc-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          name: imported.originalName,
+          path: imported.storedPath,
+          content: imported.content
+        }
+      ]);
+    } catch (error) {
+      window.alert(formatError(error, "补充资料导入失败"));
+    }
+  }
+
+  async function saveAgentSettings(settings: AgentRuntimeSettings) {
+    try {
+      setJob({ id: "job-agent-settings", type: "save", status: "running", message: "正在保存 Agent 工具设置" });
+      const saved = await saveAgentRuntimeSettings(settings);
+      setAgentRuntimeSettings(saved);
+      setDiscussionDepth(saved.discussionDepth);
+      setJob({ id: "job-agent-settings", type: "save", status: "succeeded", message: "Agent 工具设置已保存" });
+    } catch (error) {
+      setJob({ id: "job-agent-settings", type: "save", status: "failed", message: formatError(error, "保存 Agent 工具设置失败") });
+    }
+  }
+
   async function generatePlan() {
     if (!generationHotspot) {
       setJob({ id: "job-plan", type: "plan", status: "failed", message: "请先选择一个热点候选" });
@@ -368,7 +517,55 @@ function App() {
       const startedAt = performance.now();
       setJob({ id: "job-draft", type: "draft", status: "running", message: "正在生成圆桌稿" });
       const plan = roundtablePlan ?? (await generateRoundtablePlan(generationHotspot, settings));
-      const draft = await generateEpisodeDraft(plan, generationHotspot, settings);
+      let draft: EpisodeDraft;
+      const sessionId = `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      activeAgentSessionRef.current = sessionId;
+      setActiveAgentSessionId(sessionId);
+      setStreamingTurns([]);
+      setLastSavedPath("");
+      setEpisodeDraft(createStreamingDraftShell(plan, generationHotspot));
+      setActiveView("draft");
+      if (settings.draftGenerationMode === "autonomous_agent") {
+        setAgentProgress({
+          controller: {
+            sessionId,
+            agentId: "controller",
+            agentLabel: "中控 Agent",
+            phase: "启动运行时",
+            status: "running",
+            progress: 4,
+            message:
+              agentRuntimeSettings.generationEngine === "python_remote"
+                ? "正在连接 Python Agent Backend"
+                : "正在启动强自治圆桌运行时",
+            severity: "info"
+          }
+        });
+        setStreamingTurns([]);
+        draft = await generateAutonomousEpisodeDraft(plan, generationHotspot, settings, {
+          sessionId,
+          discussionDepth,
+          supplementalDocuments
+        });
+      } else {
+        setAgentProgress(
+          settings.draftGenerationMode === "multi_agent"
+            ? {
+                controller: {
+                  sessionId,
+                  agentId: "controller",
+                  agentLabel: "中控 Agent",
+                  phase: "规划轮次",
+                  status: "running",
+                  progress: 8,
+                  message: "正在规划圆桌发言顺序",
+                  severity: "info"
+                }
+              }
+            : {}
+        );
+        draft = await generateEpisodeDraft(plan, generationHotspot, settings, sessionId);
+      }
       const elapsed = Math.round(performance.now() - startedAt);
       console.info(`[AI timing] generate_episode_draft ${elapsed}ms`);
       setRoundtablePlan(plan);
@@ -570,6 +767,8 @@ function App() {
     };
   }
 
+  const showBlockingProgress = job.status === "running" && job.type !== "draft";
+
   return (
     <main className="shell">
       <aside className="sidebar">
@@ -662,14 +861,28 @@ function App() {
             {activeView === "manual" && <ManualInput onImportAttachment={importManualAttachmentFile} onSubmit={handleManualAdd} />}
             {activeView === "plan" && (
               <PlanView
+                discussionDepth={discussionDepth}
                 onGenerateDraft={generateDraft}
                 onGeneratePlan={generatePlan}
+                onDiscussionDepthChange={setDiscussionDepth}
+                onAddSupplementalDocument={addSupplementalDocument}
+                onClearSupplementalDocuments={() => setSupplementalDocuments([])}
                 onUpdateAgenda={updatePlanAgenda}
                 onUpdateTension={updatePlanTension}
                 plan={roundtablePlan}
+                supplementalDocuments={supplementalDocuments}
               />
             )}
-            {activeView === "draft" && <DraftEditor draft={episodeDraft} lastSavedPath={lastSavedPath} onSaveDraft={saveDraft} />}
+            {activeView === "draft" && (
+              <DraftEditor
+                agentProgress={agentProgress}
+                draft={episodeDraft}
+                isGenerating={job.status === "running" && job.type === "draft"}
+                job={job}
+                lastSavedPath={lastSavedPath}
+                onSaveDraft={saveDraft}
+              />
+            )}
             {activeView === "history" && (
               <HistoryView
                 drafts={historyDrafts}
@@ -683,6 +896,7 @@ function App() {
             )}
             {activeView === "settings" && (
               <SettingsView
+                agentRuntimeSettings={agentRuntimeSettings}
                 appDataDir={appDataDir}
                 modelCatalog={modelCatalog}
                 onModelChange={setSelectedModel}
@@ -697,6 +911,7 @@ function App() {
                 onDraftGenerationModeChange={setDraftGenerationMode}
                 onRefreshFromProvider={refreshModelsFromProvider}
                 onRefreshModels={refreshModelCatalog}
+                onSaveAgentSettings={saveAgentSettings}
                 onSaveSettings={saveSettings}
                 onSaveTtsSettings={saveTtsAudioSettings}
                 providerSettings={providerSettings}
@@ -714,7 +929,9 @@ function App() {
         <strong>{job.status === "failed" ? "后端异常" : job.status === "running" ? "后端执行中" : "后端状态"}</strong>
         <span>{job.message}</span>
       </footer>
-      {job.status === "running" && <BackendActivityModal job={job} mode={draftGenerationMode} />}
+      {showBlockingProgress && (
+        <BackendActivityModal agentProgress={agentProgress} job={job} mode={draftGenerationMode} streamingTurns={streamingTurns} />
+      )}
     </main>
   );
 }
@@ -1013,6 +1230,46 @@ function mergeHotspots(hotspots: HotspotCandidate[]) {
     createdAt: new Date().toISOString(),
     note: `由 ${hotspots.length} 个候选源合并生成`
   } satisfies HotspotCandidate;
+}
+
+function createStreamingDraftShell(plan: RoundtablePlan, hotspot: HotspotCandidate): EpisodeDraft {
+  const timestamp = new Date().toISOString();
+  return {
+    id: `streaming-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    title: `正在生成：${hotspot.title}`,
+    summary: "圆桌稿正在流式生成，新的嘉宾发言会逐轮出现在下方。",
+    status: "draft",
+    planId: plan.id,
+    hotspotId: hotspot.id,
+    sources: hotspot.sources,
+    guests: plan.guests,
+    dialogue: [],
+    takeaways: [],
+    factChecks: plan.sourceRisks,
+    agentTrace: [],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+}
+
+function appendTokenToTurns(turns: DialogueTurn[], turn: DialogueTurn, textDelta: string) {
+  const last = turns[turns.length - 1];
+  if (last && last.speakerId === turn.speakerId && last.intent === turn.intent) {
+    return [
+      ...turns.slice(0, -1),
+      {
+        ...last,
+        text: `${last.text}${textDelta}`
+      }
+    ];
+  }
+  return [
+    ...turns,
+    {
+      ...turn,
+      text: textDelta
+    }
+  ];
 }
 
 function StatusPill({ label, value, tone }: { label: string; value: string; tone: "success" | "warning" | "danger" | "neutral" }) {
@@ -1476,13 +1733,23 @@ function ManualInput({
 }
 
 function PlanView({
+  discussionDepth,
   plan,
+  supplementalDocuments,
+  onAddSupplementalDocument,
+  onClearSupplementalDocuments,
+  onDiscussionDepthChange,
   onGenerateDraft,
   onGeneratePlan,
   onUpdateAgenda,
   onUpdateTension
 }: {
+  discussionDepth: DiscussionDepth;
   plan: RoundtablePlan | null;
+  supplementalDocuments: SupplementalDocument[];
+  onAddSupplementalDocument: () => void;
+  onClearSupplementalDocuments: () => void;
+  onDiscussionDepthChange: (depth: DiscussionDepth) => void;
   onGenerateDraft: () => void;
   onGeneratePlan: () => void;
   onUpdateAgenda: (index: number, value: string) => void;
@@ -1507,6 +1774,40 @@ function PlanView({
           <Sparkles size={16} />
           生成圆桌稿
         </button>
+      </section>
+      <section className="agentPrepPanel">
+        <label>
+          讨论深度
+          <select value={discussionDepth} onChange={(event) => onDiscussionDepthChange(event.target.value as DiscussionDepth)}>
+            <option value="low">低：更快，8-10 轮，每位嘉宾最多 1 次工具调用</option>
+            <option value="medium">中：默认，10-14 轮，每位嘉宾最多 2 次工具调用</option>
+            <option value="high">高：更充分，12-18 轮，每位嘉宾最多 4 次工具调用</option>
+          </select>
+        </label>
+        <div className="supplementalDocs">
+          <div>
+            <strong>补充记忆资料</strong>
+            <span>生成前可上传 PDF、DOCX、MD、TXT，嘉宾 agent 会在发言前按需检索。</span>
+          </div>
+          <div className="buttonGroup">
+            <button className="ghostButton" onClick={onAddSupplementalDocument} type="button">
+              <FileText size={16} />
+              上传资料
+            </button>
+            {supplementalDocuments.length > 0 && (
+              <button className="ghostButton" onClick={onClearSupplementalDocuments} type="button">
+                清空
+              </button>
+            )}
+          </div>
+          {supplementalDocuments.length > 0 && (
+            <div className="supplementalDocList">
+              {supplementalDocuments.map((doc) => (
+                <span key={doc.id}>{doc.name}</span>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
       <div className="planColumns">
         <div>
@@ -1535,10 +1836,27 @@ function PlanView({
   );
 }
 
-function DraftEditor({ draft, lastSavedPath, onSaveDraft }: { draft: EpisodeDraft | null; lastSavedPath: string; onSaveDraft: () => void }) {
+function DraftEditor({
+  agentProgress,
+  draft,
+  isGenerating,
+  job,
+  lastSavedPath,
+  onSaveDraft
+}: {
+  agentProgress: Record<string, AgentProgressEvent>;
+  draft: EpisodeDraft | null;
+  isGenerating: boolean;
+  job: GenerationJob;
+  lastSavedPath: string;
+  onSaveDraft: () => void;
+}) {
   if (!draft) {
     return <EmptyState title="还没有圆桌稿" text="先选择热点，生成圆桌议程，再生成稿件。" />;
   }
+
+  const controllerProgress = agentProgress.controller;
+  const activeTurnProgress = currentTurnProgress(agentProgress);
 
   return (
     <div className="viewStack">
@@ -1547,26 +1865,42 @@ function DraftEditor({ draft, lastSavedPath, onSaveDraft }: { draft: EpisodeDraf
           <p className="eyebrow">圆桌稿</p>
           <h2>{draft.title}</h2>
         </div>
-        <button className="primaryButton" onClick={onSaveDraft} type="button">
+        <button className="primaryButton" disabled={isGenerating} onClick={onSaveDraft} type="button">
           <Save size={16} />
           保存草稿
         </button>
       </section>
       {lastSavedPath && <p className="savePath">已保存到：{lastSavedPath}</p>}
+      {isGenerating && (
+        <InlineDraftProgress controllerProgress={controllerProgress} job={job} activeTurnProgress={activeTurnProgress} />
+      )}
       <p className="summary">{draft.summary}</p>
       <div className="dialogueFlow">
+        {draft.dialogue.length === 0 && (
+          <div className="streamingDraftEmpty">
+            <span className="inlineSpinner" />
+            <p>{activeTurnProgress ? progressMessage(activeTurnProgress) : "Controller agent is planning the roundtable..."}</p>
+          </div>
+        )}
         {draft.dialogue.map((turn, index) => {
           const guest = draft.guests.find((item) => item.id === turn.speakerId);
+          const turnProgress = activeTurnProgress?.turnIndex === index + 1 ? activeTurnProgress : undefined;
           return (
             <article className="turn" key={`${turn.speakerId}-${index}`}>
               <div>
                 <span>{guest?.label}</span>
                 <small>{turn.intent}</small>
               </div>
-              <p>{turn.text}</p>
+              <div className="turnBody">
+                {turnProgress && turnProgress.status === "running" && <TurnProgressLine progress={turnProgress} />}
+                <p>{turn.text}</p>
+              </div>
             </article>
           );
         })}
+        {isGenerating && activeTurnProgress?.turnIndex && activeTurnProgress.turnIndex > draft.dialogue.length && (
+          <PendingTurnProgress draft={draft} progress={activeTurnProgress} />
+        )}
       </div>
       <div className="takeaways">
         {draft.takeaways.map((item) => (
@@ -1578,6 +1912,93 @@ function DraftEditor({ draft, lastSavedPath, onSaveDraft }: { draft: EpisodeDraf
       </div>
     </div>
   );
+}
+
+function InlineDraftProgress({
+  activeTurnProgress,
+  controllerProgress,
+  job
+}: {
+  activeTurnProgress?: AgentProgressEvent;
+  controllerProgress?: AgentProgressEvent;
+  job: GenerationJob;
+}) {
+  const progress = activeTurnProgress ?? controllerProgress;
+  const percent = Math.max(4, Math.min(100, progress?.progress ?? 8));
+  const title = activeTurnProgress
+    ? `${safeAgentLabel(activeTurnProgress)}: ${progressPhase(activeTurnProgress)}`
+    : progress
+      ? progressMessage(progress)
+      : "Generating draft";
+
+  return (
+    <section className="inlineDraftProgress" aria-live="polite">
+      <div className="inlineDraftProgressTop">
+        <span className="inlineSpinner" />
+        <div>
+          <strong>{title}</strong>
+          <p>{activeTurnProgress ? progressMessage(activeTurnProgress) : controllerProgress ? progressMessage(controllerProgress) : job.message}</p>
+        </div>
+      </div>
+      <div className="activityProgressTrack">
+        <span style={{ width: `${percent}%` }} />
+      </div>
+    </section>
+  );
+}
+
+function PendingTurnProgress({ draft, progress }: { draft: EpisodeDraft; progress: AgentProgressEvent }) {
+  const guest = draft.guests.find((item) => item.id === progress.agentId);
+  return (
+    <article className="turn pendingTurn">
+      <div>
+        <span>{guest?.label ?? safeAgentLabel(progress)}</span>
+        <small>{progress.turnIndex ? `Turn ${progress.turnIndex}` : progressPhase(progress)}</small>
+      </div>
+      <div className="turnBody">
+        <TurnProgressLine progress={progress} />
+        <p className="mutedText">This turn will start streaming into the draft shortly.</p>
+      </div>
+    </article>
+  );
+}
+
+function TurnProgressLine({ progress }: { progress: AgentProgressEvent }) {
+  return (
+    <div className="turnProgressLine">
+      <span className="inlineSpinner" />
+      <strong>{progressPhase(progress)}</strong>
+      <small>{progressMessage(progress)}</small>
+    </div>
+  );
+}
+
+function currentTurnProgress(agentProgress: Record<string, AgentProgressEvent>) {
+  return Object.values(agentProgress)
+    .filter((item) => item.agentId !== "controller" && item.turnIndex && item.status !== "succeeded")
+    .sort((a, b) => (b.turnIndex ?? 0) - (a.turnIndex ?? 0) || b.progress - a.progress)[0];
+}
+
+function progressPhase(progress?: AgentProgressEvent) {
+  if (progress?.phase && !hasBrokenText(progress.phase)) return progress.phase;
+  if (progress?.status === "succeeded") return "Done";
+  return "Working";
+}
+
+function progressMessage(progress?: AgentProgressEvent) {
+  if (progress?.message && !hasBrokenText(progress.message)) return progress.message;
+  if (progress?.agentId === "controller") return "Controller agent is planning and scheduling the roundtable.";
+  return "Searching sources, organizing context, and preparing this speaker's turn.";
+}
+
+function safeAgentLabel(progress: AgentProgressEvent) {
+  if (progress.agentId === "controller") return "Controller Agent";
+  if (progress.agentLabel && !hasBrokenText(progress.agentLabel)) return progress.agentLabel;
+  return progress.agentId;
+}
+
+function hasBrokenText(value: string) {
+  return /[\uFFFD\u951F\u6D93\u59DD]/.test(value);
 }
 
 function HistoryView({
@@ -1812,6 +2233,42 @@ function HistoryDraftDetail({
           </button>
         ))}
       </div>
+      <details className="agentTraceSection">
+        <summary>
+          <span>
+            <strong>Agent Trace</strong>
+            <small>{editableDraft.agentTrace?.length ? `${editableDraft.agentTrace.length} 条记录，包含中控决策、工具调用和来源摘要` : "暂无 Agent Trace"}</small>
+          </span>
+          <em>展开</em>
+        </summary>
+        {editableDraft.agentTrace?.length ? (
+          <div className="agentTraceList">
+            {editableDraft.agentTrace.map((record) => (
+            <article className={`agentTraceItem ${record.level}`} key={record.id}>
+              <div className="traceItemHeader">
+                <span className={`traceLevel ${record.level}`}>{record.level}</span>
+                <strong>{record.agentLabel}</strong>
+                <small>{record.phase}</small>
+                <time>{formatDateTimeCn(record.createdAt)}</time>
+              </div>
+              <p>{record.message}</p>
+              {record.sources && record.sources.length > 0 && (
+                <div className="traceSourceList">
+                  {record.sources.map((source) => (
+                    <button className="traceSourceButton" key={`${record.id}-${source.id}`} onClick={() => onOpenSource(source.url)} type="button">
+                      <strong>{source.publisher}</strong>
+                      <span>{source.title}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </article>
+          ))}
+          </div>
+        ) : (
+          <p className="agentTraceEmpty">暂无</p>
+        )}
+      </details>
       {exportStatus && (
         <div className="confirmOverlay" role="status" aria-live="polite">
           <div className="confirmModal">
@@ -1829,7 +2286,15 @@ function HistoryDraftDetail({
   );
 }
 
-function BackendActivityModal({ job, mode }: { job: GenerationJob; mode: "single" | "multi_agent" }) {
+function BackendActivityModal({
+  job,
+  mode
+}: {
+  agentProgress: Record<string, AgentProgressEvent>;
+  job: GenerationJob;
+  mode: DraftGenerationMode;
+  streamingTurns: DialogueTurn[];
+}) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -1841,7 +2306,7 @@ function BackendActivityModal({ job, mode }: { job: GenerationJob; mode: "single
   const progress = activityProgress(job, mode, elapsed);
 
   return (
-    <div className="activityOverlay" role="status" aria-live="polite">
+    <div className="activityOverlay" role="status" aria-live="polite" aria-modal="true">
       <div className="activityModal">
         <div className="activitySpinner" />
         <div className="activityContent">
@@ -1850,36 +2315,18 @@ function BackendActivityModal({ job, mode }: { job: GenerationJob; mode: "single
           <div className="activityProgressTrack">
             <span style={{ width: `${progress.percent}%` }} />
           </div>
-          <small>{job.message} · 已等待 {elapsed}s</small>
+          <small>{job.message} · 已用时 {elapsed}s</small>
         </div>
       </div>
     </div>
   );
 }
 
-function activityProgress(job: GenerationJob, mode: "single" | "multi_agent", elapsed: number) {
-  if (job.type === "draft" && mode === "multi_agent") {
-    const round = Math.min(16, Math.max(1, Math.floor(Math.max(0, elapsed - 8) / 6) + 1));
-    const detail = elapsed < 8 ? "正在规划圆桌对话轮次" : `正在生成第 ${round} 轮对话`;
-    return {
-      title: "正在生成圆桌稿",
-      detail,
-      percent: Math.min(92, 18 + round * 5)
-    };
-  }
-
-  if (job.type === "draft") {
-    return {
-      title: "正在生成圆桌稿",
-      detail: elapsed < 10 ? "正在整理议程、来源和嘉宾立场" : "正在等待模型返回完整草稿",
-      percent: Math.min(88, 22 + elapsed * 3)
-    };
-  }
-
+function activityProgress(job: GenerationJob, _mode: DraftGenerationMode, elapsed: number) {
   if (job.type === "plan") {
     return {
-      title: "正在生成圆桌议程",
-      detail: elapsed < 8 ? "正在检查来源和热点背景" : "正在组织议程、争议点和事实风险",
+      title: "中控 Agent 正在规划调度",
+      detail: elapsed < 8 ? "正在整理热点信息和圆桌议程" : "正在等待模型返回规划结果",
       percent: Math.min(90, 28 + elapsed * 4)
     };
   }
@@ -1887,7 +2334,7 @@ function activityProgress(job: GenerationJob, mode: "single" | "multi_agent", el
   if (job.id === "job-manual-attachment") {
     return {
       title: "正在解析附件",
-      detail: elapsed < 4 ? "正在读取并解析文件内容" : "正在保存来源文件到本地内容目录",
+      detail: elapsed < 4 ? "正在读取文件内容" : "正在保存来源文件到本地内容目录",
       percent: Math.min(92, 18 + elapsed * 8)
     };
   }
@@ -1924,6 +2371,7 @@ function activityProgress(job: GenerationJob, mode: "single" | "multi_agent", el
 }
 
 function SettingsView({
+  agentRuntimeSettings,
   appDataDir,
   draftGenerationMode,
   modelCatalog,
@@ -1932,6 +2380,7 @@ function SettingsView({
   onProviderChange,
   onRefreshFromProvider,
   onRefreshModels,
+  onSaveAgentSettings,
   onSaveSettings,
   onSaveTtsSettings,
   providerSettings,
@@ -1939,14 +2388,16 @@ function SettingsView({
   selectedProviderId,
   ttsSettings
 }: {
+  agentRuntimeSettings: AgentRuntimeSettings;
   appDataDir: string;
-  draftGenerationMode: "single" | "multi_agent";
+  draftGenerationMode: DraftGenerationMode;
   modelCatalog: ModelProvider[];
-  onDraftGenerationModeChange: (mode: "single" | "multi_agent") => void;
+  onDraftGenerationModeChange: (mode: DraftGenerationMode) => void;
   onModelChange: (model: string) => void;
   onProviderChange: (providerId: string) => void;
   onRefreshFromProvider: (settings: ProviderSettings) => void;
   onRefreshModels: () => void;
+  onSaveAgentSettings: (settings: AgentRuntimeSettings) => void;
   onSaveSettings: (settings: ProviderSettings) => void;
   onSaveTtsSettings: (settings: TtsSettings) => void;
   providerSettings: ProviderSettings[];
@@ -1954,7 +2405,7 @@ function SettingsView({
   selectedProviderId: string;
   ttsSettings: TtsSettings;
 }) {
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"roundtable" | "tts">("roundtable");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"roundtable" | "agent" | "tts">("roundtable");
   const provider = modelCatalog.find((item) => item.id === selectedProviderId);
   const savedSettings = providerSettings.find((item) => item.providerId === selectedProviderId);
   const [apiKey, setApiKey] = useState("");
@@ -1963,6 +2414,7 @@ function SettingsView({
   const [ttsApiKey, setTtsApiKey] = useState(ttsSettings.apiKey ?? "");
   const [ttsBaseUrl, setTtsBaseUrl] = useState(ttsSettings.baseUrl);
   const [ttsModel, setTtsModel] = useState(ttsSettings.selectedModel);
+  const [agentSettingsDraft, setAgentSettingsDraft] = useState<AgentRuntimeSettings>(agentRuntimeSettings);
   const ttsProvider = TTS_PROVIDER_OPTIONS.find((item) => item.id === ttsProviderId) ?? TTS_PROVIDER_OPTIONS[0];
 
   useEffect(() => {
@@ -1976,6 +2428,10 @@ function SettingsView({
     setTtsBaseUrl(ttsSettings.baseUrl);
     setTtsModel(ttsSettings.selectedModel);
   }, [ttsSettings.apiKey, ttsSettings.baseUrl, ttsSettings.providerId, ttsSettings.selectedModel]);
+
+  useEffect(() => {
+    setAgentSettingsDraft(agentRuntimeSettings);
+  }, [agentRuntimeSettings]);
 
   const currentSettings: ProviderSettings = {
     providerId: selectedProviderId,
@@ -2007,6 +2463,9 @@ function SettingsView({
       <div className="segmentedTabs settingsTabs" role="tablist" aria-label="模型设置分类">
         <button className={activeSettingsTab === "roundtable" ? "active" : ""} onClick={() => setActiveSettingsTab("roundtable")} type="button">
           圆桌模型
+        </button>
+        <button className={activeSettingsTab === "agent" ? "active" : ""} onClick={() => setActiveSettingsTab("agent")} type="button">
+          Agent 工具
         </button>
         <button className={activeSettingsTab === "tts" ? "active" : ""} onClick={() => setActiveSettingsTab("tts")} type="button">
           TTS 配音
@@ -2065,16 +2524,123 @@ function SettingsView({
             稿件生成模式
             <select
               value={draftGenerationMode}
-              onChange={(event) => onDraftGenerationModeChange(event.target.value as "single" | "multi_agent")}
+              onChange={(event) => onDraftGenerationModeChange(event.target.value as DraftGenerationMode)}
             >
               <option value="single">一个模型直接生成整稿</option>
               <option value="multi_agent">中控调度，多次调用嘉宾独立发言</option>
+              <option value="autonomous_agent">0.4 强自治 Agent 圆桌</option>
             </select>
           </label>
           <button className="ghostButton" onClick={() => onSaveSettings(currentSettings)} type="button">
             <Save size={16} />
             保存圆桌模型设置
           </button>
+        </>
+      ) : activeSettingsTab === "agent" ? (
+        <>
+          <section className="sectionHeader compactHeader">
+            <div>
+              <h2>Agent 工具与检索</h2>
+              <p className="sectionMeta">用于 0.4 强自治圆桌：本地记忆、补充资料和通用 JSON Web Search API。</p>
+            </div>
+            <div className="buttonGroup">
+              <button className="primaryButton" onClick={() => onSaveAgentSettings(agentSettingsDraft)} type="button">
+                <Save size={16} />
+                保存 Agent 设置
+              </button>
+            </div>
+          </section>
+          <label>
+            默认讨论深度
+            <select
+              value={agentSettingsDraft.discussionDepth}
+              onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, discussionDepth: event.target.value as DiscussionDepth })}
+            >
+              <option value="low">低：更快，工具预算较少</option>
+              <option value="medium">中：默认，质量和速度平衡</option>
+              <option value="high">高：更充分，工具预算较高</option>
+            </select>
+          </label>
+          <label>
+            Agent 生成引擎
+            <select
+              value={agentSettingsDraft.generationEngine}
+              onChange={(event) =>
+                setAgentSettingsDraft({
+                  ...agentSettingsDraft,
+                  generationEngine: event.target.value as AgentRuntimeSettings["generationEngine"]
+                })
+              }
+            >
+              <option value="native">Native Rust Runtime</option>
+              <option value="python_remote">Python Agent Backend (LangGraph)</option>
+            </select>
+          </label>
+          <label>
+            Python Agent Endpoint
+            <input
+              placeholder="http://127.0.0.1:8787"
+              value={agentSettingsDraft.pythonAgentBaseUrl}
+              onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, pythonAgentBaseUrl: event.target.value })}
+            />
+          </label>
+          <label>
+            Search API Base URL
+            <input
+              placeholder="https://your-search-api.example.com/search"
+              value={agentSettingsDraft.searchBaseUrl}
+              onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchBaseUrl: event.target.value })}
+            />
+          </label>
+          <label>
+            Search API Key
+            <input
+              autoComplete="off"
+              type="password"
+              value={agentSettingsDraft.searchApiKey ?? ""}
+              onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchApiKey: event.target.value })}
+            />
+          </label>
+          <label>
+            搜索语言
+            <input
+              value={agentSettingsDraft.searchLanguage}
+              onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchLanguage: event.target.value })}
+            />
+          </label>
+          <label>
+            默认结果数
+            <input
+              min={1}
+              max={10}
+              type="number"
+              value={agentSettingsDraft.searchMaxResults}
+              onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchMaxResults: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            搜索时间范围（天，可空）
+            <input
+              min={0}
+              type="number"
+              value={agentSettingsDraft.searchRecencyDays ?? ""}
+              onChange={(event) =>
+                setAgentSettingsDraft({
+                  ...agentSettingsDraft,
+                  searchRecencyDays: event.target.value ? Number(event.target.value) : undefined
+                })
+              }
+            />
+          </label>
+          <label className="checkboxLine">
+            <input
+              checked={agentSettingsDraft.debugTraceEnabled}
+              type="checkbox"
+              onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, debugTraceEnabled: event.target.checked })}
+            />
+            保存 debug 级完整 agent trace
+          </label>
+          <p className="mutedText">Search API 使用通用 JSON 接口：请求包含 <code>query</code>、<code>maxResults</code>、<code>language</code>、<code>recencyDays</code>，响应可以是数组或 <code>{"{ results: [...] }"}</code>。</p>
         </>
       ) : (
         <>

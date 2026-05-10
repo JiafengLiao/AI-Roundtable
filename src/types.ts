@@ -68,6 +68,19 @@ export type DialogueTurn = {
   text: string;
 };
 
+export type AgentTraceLevel = "info" | "warning" | "debug";
+
+export type AgentTraceRecord = {
+  id: string;
+  level: AgentTraceLevel;
+  agentId: string;
+  agentLabel: string;
+  phase: string;
+  message: string;
+  sources?: Source[];
+  createdAt: string;
+};
+
 export type EpisodeDraft = {
   id: string;
   title: string;
@@ -80,6 +93,7 @@ export type EpisodeDraft = {
   dialogue: DialogueTurn[];
   takeaways: string[];
   factChecks: string[];
+  agentTrace?: AgentTraceRecord[];
   createdAt: string;
   updatedAt: string;
 };
@@ -99,12 +113,60 @@ export type ModelProvider = {
   requiresApiKey: boolean;
 };
 
+export type DraftGenerationMode = "single" | "multi_agent" | "autonomous_agent";
+export type DiscussionDepth = "low" | "medium" | "high";
+export type AgentGenerationEngine = "native" | "python_remote";
+
 export type ProviderSettings = {
   providerId: string;
   baseUrl: string;
   apiKey?: string;
   selectedModel?: string;
-  draftGenerationMode?: "single" | "multi_agent";
+  draftGenerationMode?: DraftGenerationMode;
+};
+
+export type AgentRuntimeSettings = {
+  generationEngine: AgentGenerationEngine;
+  pythonAgentBaseUrl: string;
+  discussionDepth: DiscussionDepth;
+  searchBaseUrl: string;
+  searchApiKey?: string;
+  searchLanguage: string;
+  searchMaxResults: number;
+  searchRecencyDays?: number;
+  debugTraceEnabled: boolean;
+};
+
+export type SupplementalDocument = {
+  id: string;
+  name: string;
+  path: string;
+  content: string;
+};
+
+export type AutonomousDraftOptions = {
+  sessionId: string;
+  discussionDepth: DiscussionDepth;
+  supplementalDocuments: SupplementalDocument[];
+};
+
+export type AgentProgressEvent = {
+  sessionId: string;
+  agentId: string;
+  agentLabel: string;
+  phase: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "warning";
+  progress: number;
+  message: string;
+  severity: AgentTraceLevel;
+  turnIndex?: number;
+};
+
+export type DraftDeltaEvent = {
+  sessionId: string;
+  kind: "turn" | "token" | "final";
+  turn?: DialogueTurn;
+  textDelta?: string;
 };
 
 export type TtsSettings = {

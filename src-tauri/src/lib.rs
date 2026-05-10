@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose, Engine as _};
+﻿use base64::{engine::general_purpose, Engine as _};
 use chrono::Utc;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 // #region agent log
 fn agent_debug_log(hypothesis_id: &str, message: &str, data: serde_json::Value) {
@@ -156,10 +156,28 @@ struct EpisodeDraft {
     takeaways: Vec<String>,
     #[serde(rename = "factChecks")]
     fact_checks: Vec<String>,
+    #[serde(rename = "agentTrace", default, skip_serializing_if = "Vec::is_empty")]
+    agent_trace: Vec<AgentTraceRecord>,
     #[serde(rename = "createdAt")]
     created_at: String,
     #[serde(rename = "updatedAt")]
     updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AgentTraceRecord {
+    id: String,
+    level: String,
+    #[serde(rename = "agentId")]
+    agent_id: String,
+    #[serde(rename = "agentLabel")]
+    agent_label: String,
+    phase: String,
+    message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<Source>,
+    #[serde(rename = "createdAt")]
+    created_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -220,6 +238,46 @@ struct TtsSettings {
     api_key: Option<String>,
     #[serde(rename = "selectedModel")]
     selected_model: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AgentRuntimeSettings {
+    #[serde(rename = "generationEngine")]
+    generation_engine: String,
+    #[serde(rename = "pythonAgentBaseUrl")]
+    python_agent_base_url: String,
+    #[serde(rename = "discussionDepth")]
+    discussion_depth: String,
+    #[serde(rename = "searchBaseUrl")]
+    search_base_url: String,
+    #[serde(rename = "searchApiKey")]
+    search_api_key: Option<String>,
+    #[serde(rename = "searchLanguage")]
+    search_language: String,
+    #[serde(rename = "searchMaxResults")]
+    search_max_results: usize,
+    #[serde(rename = "searchRecencyDays")]
+    search_recency_days: Option<u16>,
+    #[serde(rename = "debugTraceEnabled")]
+    debug_trace_enabled: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct SupplementalDocument {
+    id: String,
+    name: String,
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AutonomousDraftOptions {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "discussionDepth")]
+    discussion_depth: String,
+    #[serde(rename = "supplementalDocuments")]
+    supplemental_documents: Vec<SupplementalDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -406,6 +464,49 @@ struct ChatChoice {
 #[derive(Debug, Deserialize)]
 struct ChatMessage {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionStreamResponse {
+    choices: Vec<ChatStreamChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamChoice {
+    delta: ChatStreamDelta,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatStreamDelta {
+    content: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct DraftDeltaEvent {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn: Option<DialogueTurn>,
+    #[serde(rename = "textDelta", skip_serializing_if = "Option::is_none")]
+    text_delta: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AgentProgressEvent {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "agentId")]
+    agent_id: String,
+    #[serde(rename = "agentLabel")]
+    agent_label: String,
+    phase: String,
+    status: String,
+    progress: u8,
+    message: String,
+    severity: String,
+    #[serde(rename = "turnIndex", skip_serializing_if = "Option::is_none")]
+    turn_index: Option<usize>,
 }
 
 fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1196,6 +1297,79 @@ fn openai_chat_json(
     parsed
 }
 
+fn openai_chat_text_stream(
+    client: &Client,
+    url: &str,
+    provider_id: &str,
+    log_dir: Option<&Path>,
+    task: &str,
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: String,
+    temperature: f32,
+    mut on_delta: impl FnMut(&str),
+) -> Result<String, String> {
+    let body = json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": temperature,
+        "stream": true
+    });
+    write_llm_debug_log(log_dir, task, provider_id, model, "stream_request_start", llm_body_debug_summary(url, &body));
+    let mut response = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        let response_text = response.text().unwrap_or_else(|error| error.to_string());
+        let message = format!("HTTP {status}: {}", snippet(&response_text, 1200));
+        write_llm_log(log_dir, task, provider_id, model, &body, None, None, Some(&message));
+        return Err(message);
+    }
+
+    let mut buffer = [0_u8; 8192];
+    let mut pending = String::new();
+    let mut content = String::new();
+    loop {
+        let read = response.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        pending.push_str(&String::from_utf8_lossy(&buffer[..read]));
+        while let Some(line_end) = pending.find('\n') {
+            let raw_line = pending[..line_end].trim_end_matches('\r').to_string();
+            pending.replace_range(..=line_end, "");
+            let Some(data) = raw_line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data == "[DONE]" {
+                write_llm_log(log_dir, task, provider_id, model, &body, None, Some(&content), None);
+                return Ok(content);
+            }
+            if let Ok(chunk) = serde_json::from_str::<ChatCompletionStreamResponse>(data) {
+                for choice in chunk.choices {
+                    if let Some(delta) = choice.delta.content {
+                        if !delta.is_empty() {
+                            on_delta(&delta);
+                            content.push_str(&delta);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    write_llm_log(log_dir, task, provider_id, model, &body, None, Some(&content), None);
+    Ok(content)
+}
+
 fn get_or_seed_feeds(app: &tauri::AppHandle) -> Result<Vec<FeedSource>, String> {
     let path = feeds_path(app)?;
     if path.exists() {
@@ -1460,6 +1634,72 @@ fn generate_roundtable_plan(
     Ok(generate_rule_based_plan(hotspot, &prompt_config))
 }
 
+fn emit_draft_token(app: &tauri::AppHandle, session_id: &str, turn: &DialogueTurn, text_delta: &str) {
+    if session_id.is_empty() || text_delta.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "roundtable://draft-delta",
+        DraftDeltaEvent {
+            session_id: session_id.into(),
+            kind: "token".into(),
+            turn: Some(DialogueTurn {
+                speaker_id: turn.speaker_id.clone(),
+                intent: turn.intent.clone(),
+                text: String::new(),
+            }),
+            text_delta: Some(text_delta.into()),
+        },
+    );
+}
+
+fn emit_draft_turn(app: &tauri::AppHandle, session_id: &str, turn: DialogueTurn) {
+    if session_id.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "roundtable://draft-delta",
+        DraftDeltaEvent {
+            session_id: session_id.into(),
+            kind: "turn".into(),
+            turn: Some(turn),
+            text_delta: None,
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_agent_progress(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    agent_id: &str,
+    agent_label: &str,
+    phase: &str,
+    status: &str,
+    progress: u8,
+    message: &str,
+    severity: &str,
+    turn_index: Option<usize>,
+) {
+    if session_id.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "roundtable://agent-progress",
+        AgentProgressEvent {
+            session_id: session_id.into(),
+            agent_id: agent_id.into(),
+            agent_label: agent_label.into(),
+            phase: phase.into(),
+            status: status.into(),
+            progress: progress.min(100),
+            message: message.into(),
+            severity: severity.into(),
+            turn_index,
+        },
+    );
+}
+
 fn generate_rule_based_plan(
     hotspot: HotspotCandidate,
     prompt_config: &LlmPromptConfig,
@@ -1579,17 +1819,38 @@ fn string_array(value: &serde_json::Value, key: &str) -> Option<Vec<String>> {
 }
 
 #[tauri::command]
-fn generate_episode_draft(
+async fn generate_episode_draft(
     app: tauri::AppHandle,
     plan: RoundtablePlan,
     hotspot: HotspotCandidate,
     settings: Option<ProviderSettings>,
+    session_id: Option<String>,
+) -> Result<EpisodeDraft, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        generate_episode_draft_impl(app, plan, hotspot, settings, session_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn generate_episode_draft_impl(
+    app: tauri::AppHandle,
+    plan: RoundtablePlan,
+    hotspot: HotspotCandidate,
+    settings: Option<ProviderSettings>,
+    session_id: Option<String>,
 ) -> Result<EpisodeDraft, String> {
     let prompt_config = get_or_seed_prompt_config(Some(&app))?;
     let log_dir = llm_logs_dir(&app)?;
     if let Some(settings) = settings {
         if settings.provider_id == "mock" {
-            return Ok(generate_rule_based_draft(plan, hotspot, &prompt_config));
+            let draft = generate_rule_based_draft(plan, hotspot, &prompt_config);
+            if let Some(session_id) = session_id.as_deref() {
+                for turn in draft.dialogue.iter().cloned() {
+                    emit_draft_turn(&app, session_id, turn);
+                }
+            }
+            return Ok(draft);
         }
 
         ensure_generation_provider_ready(&settings)?;
@@ -1611,6 +1872,7 @@ fn generate_episode_draft(
                 &api_key,
                 &model,
                 &prompt_config,
+                Some((&app, session_id.as_deref().unwrap_or(""))),
             )
         } else {
             println!("[AI timing] generate_single_draft start");
@@ -1633,6 +1895,23 @@ fn generate_episode_draft(
     }
 
     Ok(generate_rule_based_draft(plan, hotspot, &prompt_config))
+}
+
+#[tauri::command]
+async fn generate_autonomous_episode_draft(
+    app: tauri::AppHandle,
+    plan: RoundtablePlan,
+    hotspot: HotspotCandidate,
+    settings: ProviderSettings,
+    options: AutonomousDraftOptions,
+) -> Result<EpisodeDraft, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut settings = settings;
+        settings.draft_generation_mode = Some("multi_agent".into());
+        generate_episode_draft_impl(app, plan, hotspot, Some(settings), Some(options.session_id))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn generate_rule_based_draft(
@@ -1689,8 +1968,30 @@ fn generate_rule_based_draft(
         ],
         takeaways: prompt_config.fallbacks.takeaways.clone(),
         fact_checks: prompt_config.fallbacks.fact_checks.clone(),
+        agent_trace: Vec::new(),
         created_at: current_time.clone(),
         updated_at: current_time,
+    }
+}
+
+fn agent_trace_record(
+    id: impl Into<String>,
+    level: &str,
+    agent_id: &str,
+    agent_label: &str,
+    phase: &str,
+    message: impl Into<String>,
+    sources: Vec<Source>,
+) -> AgentTraceRecord {
+    AgentTraceRecord {
+        id: id.into(),
+        level: level.into(),
+        agent_id: agent_id.into(),
+        agent_label: agent_label.into(),
+        phase: phase.into(),
+        message: message.into(),
+        sources,
+        created_at: now(),
     }
 }
 
@@ -1756,6 +2057,29 @@ fn generate_draft_with_openai_compatible(
     if let Some(fact_checks) = string_array(&value, "factChecks") {
         draft.fact_checks = fact_checks;
     }
+    draft.agent_trace = vec![
+        agent_trace_record(
+            format!("trace-{}-single-planner", draft.id),
+            "info",
+            "controller",
+            "中控 Agent",
+            "整稿生成",
+            format!(
+                "单模型模式已基于 {} 个来源生成圆桌稿，并保留来源供事实核查。",
+                draft.sources.len()
+            ),
+            draft.sources.clone(),
+        ),
+        agent_trace_record(
+            format!("trace-{}-single-review", draft.id),
+            "info",
+            "controller",
+            "中控 Agent",
+            "事实核查提示",
+            format!("已生成 {} 条待核查提示。", draft.fact_checks.len()),
+            draft.sources.clone(),
+        ),
+    ];
     Ok(draft)
 }
 
@@ -1768,6 +2092,7 @@ fn generate_multi_agent_draft_with_openai_compatible(
     api_key: &str,
     model: &str,
     prompt_config: &LlmPromptConfig,
+    stream: Option<(&tauri::AppHandle, &str)>,
 ) -> Result<EpisodeDraft, String> {
     let client = Client::builder()
         .timeout(llm_request_timeout(provider_id, 90))
@@ -1779,6 +2104,20 @@ fn generate_multi_agent_draft_with_openai_compatible(
     let sources_json =
         serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
     let guests_json = serde_json::to_string(&plan.guests).map_err(|error| error.to_string())?;
+    if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
+        emit_agent_progress(
+            app,
+            session_id,
+            "controller",
+            "中控 Agent",
+            "规划调度",
+            "running",
+            12,
+            "中控 agent 正在规划圆桌调度和发言顺序",
+            "info",
+            None,
+        );
+    }
 
     let mut planner_replacements = style_replacements(prompt_config);
     planner_replacements.extend([
@@ -1819,6 +2158,34 @@ fn generate_multi_agent_draft_with_openai_compatible(
     if turn_plan.turns.len() < 8 {
         return Err("中控 agent 返回的对话轮次少于 8 轮".into());
     }
+    let planned_turn_count = turn_plan.turns.len().min(16).max(1);
+    let mut agent_trace = vec![agent_trace_record(
+        stable_id("trace", &format!("{}{}controller", plan.id, hotspot.id)),
+        "info",
+        "controller",
+        "中控 Agent",
+        "规划调度",
+        format!(
+            "中控 agent 已规划 {} 轮发言，议程覆盖 {} 个讨论点。",
+            planned_turn_count,
+            plan.agenda.len()
+        ),
+        hotspot.sources.clone(),
+    )];
+    if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
+        emit_agent_progress(
+            app,
+            session_id,
+            "controller",
+            "中控 Agent",
+            "调度中",
+            "succeeded",
+            24,
+            "中控 agent 已完成调度，开始逐位生成嘉宾发言",
+            "info",
+            None,
+        );
+    }
 
     let mut dialogue = Vec::new();
     for (index, turn) in turn_plan.turns.into_iter().take(16).enumerate() {
@@ -1828,6 +2195,38 @@ fn generate_multi_agent_draft_with_openai_compatible(
             .find(|guest| guest.id == turn.speaker_id)
             .or_else(|| plan.guests.first())
             .ok_or_else(|| "圆桌计划没有可用嘉宾".to_string())?;
+        let turn_progress = 24 + ((index as f32 / planned_turn_count as f32) * 68.0).round() as u8;
+        agent_trace.push(agent_trace_record(
+            stable_id(
+                "trace",
+                &format!("{}{}{}prepare", plan.id, hotspot.id, index + 1),
+            ),
+            "info",
+            &speaker.id,
+            &speaker.label,
+            "整理资料",
+            format!(
+                "第 {} 轮由「{}」发言，目标是：{}",
+                index + 1,
+                speaker.label,
+                turn.instruction
+            ),
+            hotspot.sources.clone(),
+        ));
+        if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
+            emit_agent_progress(
+                app,
+                session_id,
+                &speaker.id,
+                &speaker.label,
+                "整理资料",
+                "running",
+                turn_progress,
+                "正在查找资料、整理上下文和角色立场",
+                "info",
+                Some(index + 1),
+            );
+        }
         let speaker_json = serde_json::to_string(speaker).map_err(|error| error.to_string())?;
         let transcript = render_transcript(&dialogue, &plan.guests);
         let mut turn_replacements = style_replacements(prompt_config);
@@ -1856,24 +2255,64 @@ fn generate_multi_agent_draft_with_openai_compatible(
             &prompt_config.schemas.guest_turn,
         );
         let turn_started_at = Instant::now();
-        let turn_value_result = openai_chat_json(
-            &client,
-            &url,
-            provider_id,
-            log_dir,
-            "draft_guest_turn",
-            api_key,
-            model,
-            &prompt_config.tasks.draft_guest_turn.system_prompt,
-            turn_prompt,
-            prompt_config.tasks.draft_guest_turn.temperature,
-            &prompt_config.schemas.guest_turn,
-        );
+        let stream_turn = DialogueTurn {
+            speaker_id: turn.speaker_id.clone(),
+            intent: turn.intent.clone(),
+            text: String::new(),
+        };
+        let turn_value_result = if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
+            let stream_prompt = format!(
+                "{}\n\n重要：本次是流式输出，请只输出当前嘉宾这一轮发言正文。不要 JSON，不要 Markdown，不要输出 text 字段名。",
+                turn_prompt
+            );
+            openai_chat_text_stream(
+                &client,
+                &url,
+                provider_id,
+                log_dir,
+                "draft_guest_turn_stream",
+                api_key,
+                model,
+                "你正在扮演中文圆桌嘉宾。只输出这一轮发言正文，不要 JSON，不要 Markdown，不要字段名。",
+                stream_prompt,
+                prompt_config.tasks.draft_guest_turn.temperature,
+                |delta| emit_draft_token(app, session_id, &stream_turn, delta),
+            )
+            .map(|text| json!({ "text": text }))
+        } else {
+            openai_chat_json(
+                &client,
+                &url,
+                provider_id,
+                log_dir,
+                "draft_guest_turn",
+                api_key,
+                model,
+                &prompt_config.tasks.draft_guest_turn.system_prompt,
+                turn_prompt,
+                prompt_config.tasks.draft_guest_turn.temperature,
+                &prompt_config.schemas.guest_turn,
+            )
+        };
         println!(
             "[AI timing] draft_guest_turn {} {}ms",
             index + 1,
             turn_started_at.elapsed().as_millis()
         );
+        if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
+            emit_agent_progress(
+                app,
+                session_id,
+                &speaker.id,
+                &speaker.label,
+                "生成发言",
+                "running",
+                turn_progress.saturating_add(4),
+                "正在流式写入本轮发言",
+                "info",
+                Some(index + 1),
+            );
+        }
         let text = match turn_value_result
             .and_then(|value| serde_json::from_value::<GuestTurnResponse>(value).map_err(|error| error.to_string()))
             .map(|guest_turn| guest_turn.text.trim().to_string())
@@ -1881,6 +2320,21 @@ fn generate_multi_agent_draft_with_openai_compatible(
             Ok(text) if !text.is_empty() => text,
             Ok(_) => {
                 let fallback = fallback_guest_turn_text(speaker, &turn);
+                if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
+                    emit_draft_token(app, session_id, &stream_turn, &fallback);
+                }
+                agent_trace.push(agent_trace_record(
+                    stable_id(
+                        "trace",
+                        &format!("{}{}{}fallback-empty", plan.id, hotspot.id, index + 1),
+                    ),
+                    "warning",
+                    &speaker.id,
+                    &speaker.label,
+                    "兜底生成",
+                    "模型返回了空发言，已使用本地兜底文本继续生成。",
+                    hotspot.sources.clone(),
+                ));
                 write_llm_log(
                     log_dir,
                     "draft_guest_turn_fallback",
@@ -1894,13 +2348,29 @@ fn generate_multi_agent_draft_with_openai_compatible(
                 fallback
             }
             Err(error) => {
+                let error_message = error.to_string();
                 let fallback = fallback_guest_turn_text(speaker, &turn);
+                if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
+                    emit_draft_token(app, session_id, &stream_turn, &fallback);
+                }
+                agent_trace.push(agent_trace_record(
+                    stable_id(
+                        "trace",
+                        &format!("{}{}{}fallback-error", plan.id, hotspot.id, index + 1),
+                    ),
+                    "warning",
+                    &speaker.id,
+                    &speaker.label,
+                    "兜底生成",
+                    format!("嘉宾发言生成或解析失败，已使用本地兜底文本继续生成：{error_message}"),
+                    hotspot.sources.clone(),
+                ));
                 write_llm_log(
                     log_dir,
                     "draft_guest_turn_fallback",
                     provider_id,
                     model,
-                    &json!({"turnIndex": index + 1, "speakerId": turn.speaker_id, "reason": error}),
+                    &json!({"turnIndex": index + 1, "speakerId": turn.speaker_id, "reason": error_message}),
                     None,
                     Some(&fallback),
                     Some("嘉宾发言生成或解析失败，已使用本地兜底发言继续生成。"),
@@ -1908,11 +2378,47 @@ fn generate_multi_agent_draft_with_openai_compatible(
                 fallback
             }
         };
-        dialogue.push(DialogueTurn {
+        let dialogue_turn = DialogueTurn {
             speaker_id: turn.speaker_id,
             intent: turn.intent,
             text,
-        });
+        };
+        if stream.filter(|(_, session_id)| !session_id.is_empty()).is_none() {
+            if let Some((app, session_id)) = stream {
+                emit_draft_turn(app, session_id, dialogue_turn.clone());
+            }
+        }
+        agent_trace.push(agent_trace_record(
+            stable_id(
+                "trace",
+                &format!("{}{}{}complete", plan.id, hotspot.id, index + 1),
+            ),
+            "info",
+            &speaker.id,
+            &speaker.label,
+            "发言完成",
+            format!(
+                "第 {} 轮发言已生成，约 {} 个字符。",
+                index + 1,
+                dialogue_turn.text.chars().count()
+            ),
+            Vec::new(),
+        ));
+        dialogue.push(dialogue_turn);
+        if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
+            emit_agent_progress(
+                app,
+                session_id,
+                &speaker.id,
+                &speaker.label,
+                "发言完成",
+                "succeeded",
+                turn_progress.saturating_add(8),
+                "本轮发言已写入圆桌稿",
+                "info",
+                Some(index + 1),
+            );
+        }
     }
 
     let mut draft = generate_rule_based_draft(plan.clone(), hotspot.clone(), prompt_config);
@@ -1921,6 +2427,16 @@ fn generate_multi_agent_draft_with_openai_compatible(
     draft.dialogue = dialogue;
     draft.takeaways = turn_plan.takeaways;
     draft.fact_checks = turn_plan.fact_checks;
+    agent_trace.push(agent_trace_record(
+        stable_id("trace", &format!("{}{}fact-check", plan.id, hotspot.id)),
+        "info",
+        "controller",
+        "中控 Agent",
+        "事实核查提示",
+        format!("已生成 {} 条待核查提示，建议发布前逐条核对来源。", draft.fact_checks.len()),
+        draft.sources.clone(),
+    ));
+    draft.agent_trace = agent_trace;
     Ok(draft)
 }
 
@@ -3004,6 +3520,30 @@ fn default_tts_settings() -> TtsSettings {
     }
 }
 
+fn default_agent_runtime_settings() -> AgentRuntimeSettings {
+    AgentRuntimeSettings {
+        generation_engine: "native".into(),
+        python_agent_base_url: "http://127.0.0.1:8787".into(),
+        discussion_depth: "medium".into(),
+        search_base_url: String::new(),
+        search_api_key: None,
+        search_language: "zh-CN".into(),
+        search_max_results: 5,
+        search_recency_days: Some(14),
+        debug_trace_enabled: false,
+    }
+}
+
+#[tauri::command]
+fn get_agent_runtime_settings(_app: tauri::AppHandle) -> Result<AgentRuntimeSettings, String> {
+    Ok(default_agent_runtime_settings())
+}
+
+#[tauri::command]
+fn save_agent_runtime_settings(settings: AgentRuntimeSettings) -> Result<AgentRuntimeSettings, String> {
+    Ok(settings)
+}
+
 fn seed_tts_settings_from_roundtable(_app: &tauri::AppHandle) -> Result<TtsSettings, String> {
     Ok(default_tts_settings())
 }
@@ -3277,6 +3817,7 @@ pub fn run() {
             add_manual_hotspot,
             generate_roundtable_plan,
             generate_episode_draft,
+            generate_autonomous_episode_draft,
             save_episode_draft,
             write_text_file,
             write_binary_file,
@@ -3289,6 +3830,8 @@ pub fn run() {
             get_tts_settings,
             save_tts_settings,
             validate_tts_connection,
+            get_agent_runtime_settings,
+            save_agent_runtime_settings,
             list_episode_drafts
         ])
         .run(tauri::generate_context!())

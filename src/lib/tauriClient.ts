@@ -1,6 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
-import type { EpisodeDraft, FeedSource, HotspotCandidate, ModelProvider, ProviderSettings, RoundtablePlan, TtsSettings } from "../types";
+import type {
+  AgentRuntimeSettings,
+  AutonomousDraftOptions,
+  EpisodeDraft,
+  FeedSource,
+  HotspotCandidate,
+  ModelProvider,
+  ProviderSettings,
+  RoundtablePlan,
+  TtsSettings
+} from "../types";
 
 export type ManualHotspotInput = {
   title: string;
@@ -47,8 +57,17 @@ export function generateRoundtablePlan(hotspot: HotspotCandidate, settings?: Pro
   return invoke<RoundtablePlan>("generate_roundtable_plan", { hotspot, settings });
 }
 
-export function generateEpisodeDraft(plan: RoundtablePlan, hotspot: HotspotCandidate, settings?: ProviderSettings) {
-  return invoke<EpisodeDraft>("generate_episode_draft", { plan, hotspot, settings });
+export function generateEpisodeDraft(plan: RoundtablePlan, hotspot: HotspotCandidate, settings?: ProviderSettings, sessionId?: string) {
+  return invoke<EpisodeDraft>("generate_episode_draft", { plan, hotspot, settings, sessionId });
+}
+
+export function generateAutonomousEpisodeDraft(
+  plan: RoundtablePlan,
+  hotspot: HotspotCandidate,
+  settings: ProviderSettings,
+  options: AutonomousDraftOptions
+) {
+  return invoke<EpisodeDraft>("generate_autonomous_episode_draft", { plan, hotspot, settings, options });
 }
 
 export function saveEpisodeDraft(draft: EpisodeDraft) {
@@ -97,6 +116,14 @@ export function saveTtsSettings(settings: TtsSettings) {
 
 export function validateTtsConnection(settings: TtsSettings) {
   return invoke<string>("validate_tts_connection", { settings });
+}
+
+export function getAgentRuntimeSettings() {
+  return invoke<AgentRuntimeSettings>("get_agent_runtime_settings");
+}
+
+export function saveAgentRuntimeSettings(settings: AgentRuntimeSettings) {
+  return invoke<AgentRuntimeSettings>("save_agent_runtime_settings", { settings });
 }
 
 export function listEpisodeDrafts() {

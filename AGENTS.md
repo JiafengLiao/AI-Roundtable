@@ -28,6 +28,7 @@ Useful references:
 - Avoid decorative gradients, oversized hero blocks, nested cards, and stock-like visual treatment.
 - Prioritize scanability: source credibility, candidate status, generation status, and fact-check risk must be visible.
 - Verify responsive behavior so text does not overflow or overlap.
+- Always consider ease-of-use. Do not over-design. Use less modification useless necessary.
 
 ## Local Commands
 ```powershell
