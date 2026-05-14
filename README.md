@@ -1,27 +1,49 @@
 # AI Roundtable
 
-AI Roundtable is a local desktop content production tool for weekly AI hotspot analysis. The user-facing Chinese product name is **AI小圆桌**. The internal package and executable name is `ai-roundtable`.
+AI Roundtable is a local desktop workbench for producing a weekly Chinese AI hotspot roundtable. The user-facing Chinese product name is **AI小圆桌**. The internal package and executable name is `ai-roundtable`.
 
-It collects AI news signals from RSS and manual input, asks a central planning agent to structure a roundtable, then generates an editable Chinese draft with simulated roles:
+The app helps an editor collect AI news signals from RSS and manual input, ask a central planning agent to structure the discussion, then generate, review, and export an editable Chinese roundtable draft. It is a content production tool for AI practitioners and editors, not a public reader site, cloud CMS, or real interview product.
 
-- Host: explains the hotspot and keeps the discussion readable.
-- Hotspot participant: provides industry intuition without pretending to be a real person.
-- Investor: analyzes business impact, competition, and capital efficiency.
-- Technical expert: analyzes model, engineering, data, safety, and feasibility questions.
+## What It Does
 
-The MVP is a tool for editors and AI practitioners. It is not a public reader app, not an audio product, and not a cloud CMS.
+- Collects AI hotspot candidates from curated RSS feeds and manual input.
+- Scores and filters candidates by date range, source count, source category, and matched signals.
+- Generates a central-agent roundtable plan before drafting.
+- Generates Chinese roundtable drafts with simulated roles: host, hotspot participant, investor, and technical expert.
+- Keeps source links, fact-check risks, takeaways, and agent trace data attached to drafts.
+- Saves draft history locally.
+- Exports text/PDF-style artifacts from the frontend and MP3 audio through supported TTS providers.
+
+Simulated roundtable guests must never be presented as real interviewed people. Generated drafts should keep uncertainty visible and should be reviewed against original sources before publishing.
 
 ## Stack
 
 - Desktop: Tauri v2
 - Frontend: React, TypeScript, Vite
-- Storage: local JSON files
-- LLM: OpenAI-compatible providers with explicit local rule-based fallback only when selected
+- Backend shell: Rust Tauri commands
+- Optional agent backend: Python FastAPI service under `agent-backend/`
+- Storage: local JSON files in the Tauri app data directory
+- LLM: OpenAI-compatible providers, plus explicit local mock/rule generation
+- TTS: OpenAI TTS and DashScope TTS adapters
 - Packaging: Windows NSIS installer; macOS users can build unsigned `.app` / `.dmg` locally
 
-## Local Setup On Windows
+## Requirements
 
-PowerShell may block `npm.ps1`, so use `npm.cmd`.
+Windows:
+
+- Node.js and npm
+- Rust stable toolchain
+- Microsoft Visual Studio Build Tools with C++ tooling for Tauri builds
+
+macOS:
+
+- Node.js and npm
+- Rust stable toolchain
+- Xcode Command Line Tools
+
+PowerShell may block `npm.ps1`, so use `npm.cmd` on Windows. Use plain `npm` on macOS/Linux.
+
+## Quick Start On Windows
 
 ```powershell
 npm.cmd install
@@ -36,21 +58,22 @@ npm.cmd run build
 npm.cmd run tauri:build
 ```
 
-## Local Setup On macOS
+Expected Windows package output:
 
-macOS builds must be produced on a Mac because Apple app bundles, code signing, notarization, and DMG packaging depend on Apple's local toolchain.
+```text
+src-tauri\target\release\ai-roundtable.exe
+src-tauri\target\release\bundle\nsis\AI小圆桌_0.1.0_x64-setup.exe
+```
 
-Install Xcode Command Line Tools:
+## Quick Start On macOS
+
+macOS app bundles and DMG packages must be built on a Mac because they depend on Apple's local toolchain.
 
 ```bash
 xcode-select --install
-```
-
-Install Rust and project dependencies:
-
-```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 npm install
+npm run tauri:dev
 ```
 
 Build an unsigned local app and DMG:
@@ -75,23 +98,110 @@ npm run tauri:build:mac:universal
 
 Unsigned local builds are suitable for personal use. Public distribution to other Mac users requires an Apple Developer account, code signing, notarization, and stapling; otherwise Gatekeeper may block or warn on launch.
 
-## MVP Workflow
+## Product Workflow
 
 1. Open AI小圆桌.
 2. Select the target date range.
 3. Fetch RSS candidates.
 4. Add missing hotspots manually when needed.
-5. Select one hotspot.
+5. Select one or more candidate hotspots.
 6. Generate a central-agent discussion agenda.
-7. Generate the roundtable draft.
-8. Review sources and fact-check risks.
-9. Edit and export the draft locally.
+7. Review the agenda, role setup, tension points, and source risks.
+8. Generate the roundtable draft.
+9. Review sources, fact-check risks, role quality, and final takeaways.
+10. Edit, save, and export locally.
 
-## Current Status
+## Model Configuration
 
-The repository contains a working local MVP: React calls Tauri commands through `invoke`, the Rust side reads and writes local JSON, fetches real RSS feeds, supports manual hotspot input, generates roundtable agendas and drafts through OpenAI-compatible providers, and saves drafts locally. When a real LLM provider is selected, the app checks connectivity before saving settings and before generation; failed LLM calls no longer silently fall back to local generation.
+Open **Settings** in the app to configure generation and TTS.
 
-Bundled LLM prompts and guest personas are split by responsibility:
+Generation providers currently focus on OpenAI-compatible chat completion APIs:
+
+- OpenAI
+- DeepSeek
+- Qwen / DashScope compatible mode
+- Mock/local rule generator for no-key testing
+
+Real provider settings require a Base URL, API Key, and selected model. The app checks connectivity when settings are saved and before generation. If a real provider fails, the app returns an error instead of silently falling back to mock output.
+
+Draft generation modes:
+
+- `single`: one structured model call generates the complete draft.
+- `multi_agent`: the central agent plans turns, then each simulated guest is called separately.
+- `autonomous_agent`: optional agent runtime path for deeper stepwise generation.
+
+## Optional Python Agent Backend
+
+The desktop app can run fully through the native Tauri/Rust generation path. The Python backend is optional and mainly used for the experimental autonomous agent mode powered by FastAPI, LangGraph, and LangChain.
+
+Prerequisites:
+
+- Python 3.11+
+- `uv`
+- A real LLM provider configured in the desktop app
+
+Start the backend from the project root:
+
+```powershell
+cd agent-backend
+uv sync
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8787
+```
+
+macOS/Linux use the same commands:
+
+```bash
+cd agent-backend
+uv sync
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8787
+```
+
+Then open the desktop app and configure:
+
+- Settings -> Roundtable model -> Draft generation mode: `0.4 autonomous agent`
+- Settings -> Agent tools -> Agent engine: `Python Agent Backend (LangGraph)`
+- Settings -> Agent tools -> Python Agent Endpoint: `http://127.0.0.1:8787`
+- Save Agent tool settings before generating the draft.
+
+The Rust side first calls `POST /v1/generate/events` for streamed progress. If streaming fails, it falls back to `POST /v1/generate`. Both endpoints return the same canonical `EpisodeDraft` shape used by the desktop app.
+
+## TTS And MP3 Export
+
+MP3 export uses the TTS settings page. The supported adapters are:
+
+- OpenAI TTS: easiest path for quick setup. Existing persona voices use OpenAI-style names such as `alloy`, `coral`, `onyx`, and `sage`.
+- DashScope TTS: supports `MiniMax/speech-2.8-hd` and `cosyvoice-v3.5-plus` through the Rust adapter.
+
+Important DashScope notes:
+
+- `MiniMax/speech-2.8-hd` must be activated for the API Key in Alibaba Cloud Model Studio.
+- `cosyvoice-v3.5-plus` generally needs a valid voice clone or voice design ID created in Model Studio. Built-in-looking values such as `longanlang` may fail with voice/model mismatch errors.
+- Persona-level voice mapping lives in `config/prompts/personas.json` under each role's `tts` field.
+
+## Local Data
+
+The app stores runtime data in the Tauri app data directory, not in the project root.
+
+Default locations:
+
+- Windows: `%APPDATA%\com.ai.roundtable`
+- macOS: `~/Library/Application Support/com.ai.roundtable`
+
+Common files and folders:
+
+```text
+feeds.json
+provider-settings.json
+tts-settings.json
+llm-prompts.json
+drafts/
+```
+
+API keys are currently stored in local app-data JSON. Keep that directory private and avoid committing copied settings files.
+
+## Prompt Configuration
+
+Bundled prompt and persona files live under:
 
 ```text
 config/prompts/personas.json
@@ -101,11 +211,57 @@ config/prompts/schemas/
 config/prompts/fallbacks.json
 ```
 
-On first run, the app composes those files into a writable app-data copy named `llm-prompts.json`.
+On first run, the app composes those files into a writable app-data copy named `llm-prompts.json`. Edit the app-data copy for local prompt tuning, or edit `config/prompts/` to change bundled defaults.
 
-Default app-data locations:
+Version 3 prompt config supports both one-shot draft generation and multi-agent draft generation.
 
-- Windows: `%APPDATA%\com.ai.roundtable`
-- macOS: `~/Library/Application Support/com.ai.roundtable`
+## Verification
 
-Version 3 prompt config supports one-shot draft generation and multi-agent draft generation where the central agent plans turns, then calls each simulated guest independently.
+```powershell
+npm.cmd run typecheck
+npm.cmd run lint
+npm.cmd run build
+```
+
+macOS/Linux:
+
+```bash
+npm run typecheck
+npm run lint
+npm run build
+```
+
+Use `npm.cmd run tauri:dev` for desktop integration testing. Tauri `invoke(...)` calls do not appear in the browser Network panel; inspect the Tauri window console and local app-data JSON when debugging.
+
+## Troubleshooting
+
+- `npm.ps1 cannot be loaded`: use `npm.cmd` in PowerShell.
+- Tauri build cannot find Rust/Cargo: add `%USERPROFILE%\.cargo\bin` to the current shell `PATH`.
+- Windows package build fails with C++ toolchain errors: install Visual Studio Build Tools with `Microsoft.VisualStudio.Workload.VCTools`.
+- Real LLM generation fails: check provider, Base URL, API Key, selected model, and model permission.
+- Python agent generation fails: confirm `uvicorn` is running on `127.0.0.1:8787`, the endpoint in Settings matches it, and the draft mode is `0.4 autonomous agent`.
+- TTS returns empty audio or HTTP 400: confirm the TTS model is activated and that the configured voice ID is valid for that model.
+- UI settings seem stale: check the app data directory; runtime settings are read from local JSON there.
+
+## Repository Map
+
+```text
+src/                         React frontend
+src-tauri/                   Tauri Rust backend and packaging config
+agent-backend/               Optional Python agent backend
+config/prompts/              Bundled prompt, persona, schema, and fallback config
+docs/                        Product, technical, UX, packaging, and workflow docs
+dev_readme.md                Developer commands and release workflow
+dev_readme.zh-CN.md          Chinese developer commands and release workflow
+README.zh-CN.md              Chinese project README
+```
+
+## Documentation
+
+- `docs/PRODUCT_REQUIREMENTS.md`: product scope and success criteria.
+- `docs/TECHNICAL_PLAN.md`: architecture and data flow.
+- `docs/FRONTEND_UX_REQUIREMENTS.md`: UI and visual quality requirements.
+- `docs/PACKAGING_RELEASE_PIPELINE.md`: Windows packaging and release flow.
+- `docs/CODEX_WORKFLOW.md`: Codex implementation and verification workflow.
+- `docs/CONTENT_WORKFLOW.md`: editorial production workflow.
+- `docs/LLM_AGENT_DESIGN.md`: central agent and simulated role design.
