@@ -66,6 +66,9 @@ class DialogueTurn(BaseModel):
     speaker_id: str = Field(alias="speakerId")
     intent: str
     text: str
+    source: Literal["ai", "user"] | None = None
+    interrupted: bool = False
+    created_at: str | None = Field(default=None, alias="createdAt")
 
     model_config = ConfigDict(populate_by_name=True)
 

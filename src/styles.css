@@ -1012,6 +1012,19 @@ button {
   padding: 14px;
 }
 
+.turn.userTurn {
+  border-color: rgba(85, 240, 221, 0.32);
+  background: rgba(10, 42, 42, 0.46);
+}
+
+.turn.interruptedTurn {
+  border-color: rgba(247, 194, 86, 0.34);
+}
+
+.turn.interruptedTurn small {
+  color: #f7c256;
+}
+
 .turnBody {
   display: grid;
   gap: 8px;
@@ -1075,6 +1088,7 @@ button {
 
 .streamingDraftEmpty {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   min-height: 68px;
@@ -1083,6 +1097,137 @@ button {
   border-radius: 8px;
   color: #a9b8bd;
   background: rgba(10, 24, 27, 0.42);
+}
+
+.interactiveLiveControl {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(247, 194, 86, 0.26);
+  border-radius: 8px;
+  background: rgba(29, 22, 10, 0.58);
+}
+
+.interactiveLiveStatus {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.interactiveLiveStatus strong,
+.interactiveLiveStatus p {
+  display: block;
+  margin: 0;
+}
+
+.interactiveLiveStatus strong {
+  color: #edf6f7;
+}
+
+.interactiveLiveStatus p {
+  margin-top: 4px;
+  color: #a9b8bd;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.turnLiveActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  margin-top: 2px;
+}
+
+.streamingDraftEmpty .inlineInterruptButton {
+  margin-left: auto;
+}
+
+.inlineInterruptButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 40px;
+  min-width: 142px;
+  padding: 0 14px;
+  border: 1px solid rgba(247, 194, 86, 0.44);
+  border-radius: 8px;
+  color: #201609;
+  background: #f7c256;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(247, 194, 86, 0.12);
+}
+
+.inlineInterruptButton:hover {
+  background: #ffd579;
+}
+
+.inlineInterruptButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.interactiveComposerAnchor {
+  scroll-margin: 120px;
+}
+
+.interactiveComposer {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(85, 240, 221, 0.2);
+  border-radius: 8px;
+  background: rgba(8, 18, 22, 0.82);
+}
+
+.interactiveComposerHeader,
+.interactiveActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.interactiveComposerHeader strong,
+.interactiveComposerHeader span {
+  display: block;
+}
+
+.interactiveComposerHeader span {
+  margin-top: 4px;
+  color: #a9b8bd;
+  font-size: 13px;
+}
+
+.interactiveComposer textarea {
+  min-height: 112px;
+  width: 100%;
+  resize: vertical;
+}
+
+.interactiveStatus {
+  flex: 0 0 auto;
+  min-width: 108px;
+  padding: 6px 9px;
+  border: 1px solid rgba(85, 240, 221, 0.2);
+  border-radius: 999px;
+  color: #55f0dd;
+  text-align: center;
+  font-size: 12px;
+  text-transform: uppercase;
+  background: rgba(85, 240, 221, 0.08);
+}
+
+.interactiveStatus.awaiting_user,
+.interactiveStatus.interrupted {
+  border-color: rgba(247, 194, 86, 0.34);
+  color: #f7c256;
+  background: rgba(247, 194, 86, 0.08);
 }
 
 .streamingDraftEmpty p {
@@ -1717,11 +1862,22 @@ button {
   .topbar,
   .sectionHeader,
   .detailHeader,
+  .interactiveLiveControl,
+  .interactiveComposerHeader,
+  .interactiveActions,
   .turn,
   .dateRangeControl {
     align-items: stretch;
     grid-template-columns: 1fr;
     flex-direction: column;
+  }
+
+  .inlineInterruptButton {
+    width: 100%;
+  }
+
+  .streamingDraftEmpty .inlineInterruptButton {
+    margin-left: 0;
   }
 
   .exportMenu {

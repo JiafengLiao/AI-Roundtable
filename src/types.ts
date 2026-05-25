@@ -33,6 +33,7 @@ export type HotspotCandidate = {
 };
 
 export type GuestId = "host" | "participant" | "investor" | "expert";
+export type SpeakerId = GuestId | "user";
 
 export type GuestPersona = {
   id: GuestId;
@@ -63,9 +64,12 @@ export type RoundtablePlan = {
 };
 
 export type DialogueTurn = {
-  speakerId: GuestId;
-  intent: "open" | "context" | "intuition" | "business" | "technical" | "challenge" | "summary";
+  speakerId: SpeakerId;
+  intent: "open" | "context" | "intuition" | "business" | "technical" | "challenge" | "followup" | "transition" | "summary" | "user_input";
   text: string;
+  source?: "ai" | "user";
+  interrupted?: boolean;
+  createdAt?: string;
 };
 
 export type AgentTraceLevel = "info" | "warning" | "debug";
@@ -169,8 +173,25 @@ export type DraftDeltaEvent = {
   textDelta?: string;
 };
 
+export type InteractiveRoundtableStatus = "idle" | "running" | "awaiting_user" | "interrupted" | "finished" | "failed";
+
+export type InteractiveSessionEvent = {
+  sessionId: string;
+  status: InteractiveRoundtableStatus;
+  message: string;
+  draft?: EpisodeDraft;
+  activeSpeakerId?: SpeakerId;
+};
+
 export type TtsSettings = {
   providerId: "openai" | "dashscope";
+  baseUrl: string;
+  apiKey?: string;
+  selectedModel: string;
+};
+
+export type AsrSettings = {
+  providerId: "dashscope";
   baseUrl: string;
   apiKey?: string;
   selectedModel: string;

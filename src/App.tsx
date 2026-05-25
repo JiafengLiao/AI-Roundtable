@@ -14,6 +14,7 @@ import {
   Download,
   FileEdit,
   FileText,
+  Mic,
   PenLine,
   Plus,
   Radio,
@@ -26,8 +27,10 @@ import {
 import {
   addManualHotspot,
   exportEpisodeMp3,
+  finishInteractiveRoundtable,
   generateEpisodeDraft,
   generateAutonomousEpisodeDraft,
+  getAsrSettings,
   getAgentRuntimeSettings,
   generateRoundtablePlan,
   getAppDataDir,
@@ -35,16 +38,21 @@ import {
   getProviderSettings,
   getTtsSettings,
   getFeeds,
+  interruptInteractiveRoundtable,
   importManualAttachment,
   listEpisodeDrafts,
   openExternalUrl,
   refreshModelCatalog as refreshModelCatalogFromBackend,
   saveEpisodeDraft,
   saveFeeds,
+  saveAsrSettings,
   saveAgentRuntimeSettings,
   saveProviderSettings,
   saveTtsSettings,
   searchHotspots,
+  startInteractiveRoundtable,
+  submitInteractiveUserTurn,
+  transcribeAudioWithParaformer,
   validateProviderConnection,
   validateTtsConnection,
   writeBinaryFile,
@@ -54,6 +62,7 @@ import type { ManualAttachmentImportResult, ManualHotspotInput } from "./lib/tau
 import type {
   AgentProgressEvent,
   AgentRuntimeSettings,
+  AsrSettings,
   DialogueTurn,
   DiscussionDepth,
   DraftDeltaEvent,
@@ -62,6 +71,7 @@ import type {
   FeedSource,
   GenerationJob,
   HotspotCandidate,
+  InteractiveSessionEvent,
   ModelProvider,
   ProviderSettings,
   RoundtablePlan,
@@ -106,6 +116,12 @@ const DEFAULT_TTS_SETTINGS: TtsSettings = {
   baseUrl: "https://dashscope.aliyuncs.com/api/v1",
   apiKey: "",
   selectedModel: "MiniMax/speech-2.8-hd"
+};
+const DEFAULT_ASR_SETTINGS: AsrSettings = {
+  providerId: "dashscope",
+  baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+  apiKey: "",
+  selectedModel: "paraformer-realtime-v2"
 };
 const DEFAULT_AGENT_RUNTIME_SETTINGS: AgentRuntimeSettings = {
   generationEngine: "native",
@@ -159,6 +175,7 @@ function App() {
   const [modelCatalog, setModelCatalog] = useState<ModelProvider[]>([]);
   const [providerSettings, setProviderSettings] = useState<ProviderSettings[]>([]);
   const [ttsSettings, setTtsSettings] = useState<TtsSettings>(DEFAULT_TTS_SETTINGS);
+  const [asrSettings, setAsrSettings] = useState<AsrSettings>(DEFAULT_ASR_SETTINGS);
   const [agentRuntimeSettings, setAgentRuntimeSettings] = useState<AgentRuntimeSettings>(DEFAULT_AGENT_RUNTIME_SETTINGS);
   const [selectedProviderId, setSelectedProviderId] = useState(DEFAULT_PROVIDER_ID);
   const [selectedModel, setSelectedModel] = useState("deepseek-chat");
@@ -169,6 +186,11 @@ function App() {
   const [streamingTurns, setStreamingTurns] = useState<DialogueTurn[]>([]);
   const [activeAgentSessionId, setActiveAgentSessionId] = useState("");
   const activeAgentSessionRef = useRef("");
+  const [interactiveSessionId, setInteractiveSessionId] = useState("");
+  const interactiveSessionRef = useRef("");
+  const [interactiveStatus, setInteractiveStatus] = useState<InteractiveSessionEvent | null>(null);
+  const [userInterjectionText, setUserInterjectionText] = useState("");
+  const [isVoiceTranscribing, setIsVoiceTranscribing] = useState(false);
   const [historyDrafts, setHistoryDrafts] = useState<EpisodeDraft[]>([]);
   const [selectedHistoryDraft, setSelectedHistoryDraft] = useState<EpisodeDraft | null>(null);
   const [appDataDir, setAppDataDir] = useState("");
@@ -209,11 +231,12 @@ function App() {
     void (async () => {
       try {
         setJob({ id: "job-init", type: "fetch", status: "running", message: "正在连接 Tauri 后端" });
-        const [feedResult, catalogResult, settingsResult, ttsSettingsResult, agentSettingsResult, historyResult, appDataDirResult] = await Promise.all([
+        const [feedResult, catalogResult, settingsResult, ttsSettingsResult, asrSettingsResult, agentSettingsResult, historyResult, appDataDirResult] = await Promise.all([
           getFeeds(),
           getModelCatalog(),
           getProviderSettings(),
           getTtsSettings(),
+          getAsrSettings(),
           getAgentRuntimeSettings(),
           listEpisodeDrafts(),
           getAppDataDir()
@@ -233,6 +256,7 @@ function App() {
         setModelCatalog(nextCatalog);
         setProviderSettings(settingsResult);
         setTtsSettings(ttsSettingsResult);
+        setAsrSettings(asrSettingsResult);
         setAgentRuntimeSettings(agentSettingsResult);
         setDiscussionDepth(agentSettingsResult.discussionDepth);
         setHistoryDrafts(historyResult);
@@ -262,6 +286,10 @@ function App() {
   }, [activeAgentSessionId]);
 
   useEffect(() => {
+    interactiveSessionRef.current = interactiveSessionId;
+  }, [interactiveSessionId]);
+
+  useEffect(() => {
     let cleanupProgress: (() => void) | undefined;
     let cleanupDelta: (() => void) | undefined;
     let cancelled = false;
@@ -283,15 +311,16 @@ function App() {
 
     void listen<DraftDeltaEvent>("roundtable://draft-delta", (event) => {
       const sessionId = activeAgentSessionRef.current;
-      if (!sessionId || event.payload.sessionId !== sessionId) return;
+      const interactiveId = interactiveSessionRef.current;
+      if ((!sessionId || event.payload.sessionId !== sessionId) && (!interactiveId || event.payload.sessionId !== interactiveId)) return;
       if (event.payload.kind === "turn" && event.payload.turn) {
         const turn = event.payload.turn as DialogueTurn;
-        setStreamingTurns((current) => [...current, turn]);
+        setStreamingTurns((current) => upsertFinalTurn(current, turn));
         setEpisodeDraft((current) =>
           current
             ? {
                 ...current,
-                dialogue: [...current.dialogue, turn],
+                dialogue: upsertFinalTurn(current.dialogue, turn),
                 updatedAt: new Date().toISOString()
               }
             : current
@@ -323,6 +352,34 @@ function App() {
       cancelled = true;
       cleanupProgress?.();
       cleanupDelta?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cleanupInteractive: (() => void) | undefined;
+    let cancelled = false;
+
+    void listen<InteractiveSessionEvent>("roundtable://interactive-state", (event) => {
+      const sessionId = interactiveSessionRef.current;
+      if (!sessionId || event.payload.sessionId !== sessionId) return;
+      setInteractiveStatus(event.payload);
+      if (event.payload.draft) {
+        setEpisodeDraft(event.payload.draft);
+      }
+      if (event.payload.status === "awaiting_user" || event.payload.status === "interrupted") {
+        setActiveView("draft");
+      }
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        cleanupInteractive = unlisten;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      cleanupInteractive?.();
     };
   }, []);
 
@@ -579,6 +636,105 @@ function App() {
     }
   }
 
+  async function startInteractiveDraft() {
+    if (!generationHotspot) {
+      setJob({ id: "job-interactive", type: "draft", status: "failed", message: "请先选择一个热点候选" });
+      return;
+    }
+
+    try {
+      const settings = interactiveProviderSettings();
+      const plan = roundtablePlan ?? (await generateRoundtablePlan(generationHotspot, settings));
+      const sessionId = `interactive-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      interactiveSessionRef.current = sessionId;
+      setInteractiveSessionId(sessionId);
+      setInteractiveStatus({
+        sessionId,
+        status: "running",
+        message: "互动圆桌正在启动"
+      });
+      setUserInterjectionText("");
+      setStreamingTurns([]);
+      setLastSavedPath("");
+      setRoundtablePlan(plan);
+      setActiveView("draft");
+      setJob({ id: "job-interactive", type: "draft", status: "running", message: "互动圆桌正在生成，可随时打断" });
+      const draft = await startInteractiveRoundtable(plan, generationHotspot, settings, sessionId);
+      setEpisodeDraft(draft);
+    } catch (error) {
+      setJob({ id: "job-interactive", type: "draft", status: "failed", message: formatError(error, "启动互动圆桌失败") });
+      showLlmSettingsPrompt(error, "启动互动圆桌失败，模型连接或调用没有成功。");
+    }
+  }
+
+  async function interruptInteractiveDraft() {
+    if (!interactiveSessionId) return;
+    try {
+      await interruptInteractiveRoundtable(interactiveSessionId);
+      setInteractiveStatus((current) =>
+        current
+          ? { ...current, status: "interrupted", message: "正在停止当前 AI 发言，稍后可输入你的观点。" }
+          : { sessionId: interactiveSessionId, status: "interrupted", message: "正在停止当前 AI 发言，稍后可输入你的观点。" }
+      );
+      setJob({ id: "job-interrupt", type: "draft", status: "running", message: "正在打断当前 AI 发言" });
+    } catch (error) {
+      setJob({ id: "job-interrupt", type: "draft", status: "failed", message: formatError(error, "打断失败") });
+    }
+  }
+
+  async function submitInteractiveText(text: string) {
+    if (!interactiveSessionId) return;
+    const trimmed = text.trim();
+    if (!trimmed) {
+      setJob({ id: "job-user-turn", type: "draft", status: "failed", message: "请输入你的发言" });
+      return;
+    }
+    try {
+      const draft = await submitInteractiveUserTurn(interactiveSessionId, trimmed);
+      setEpisodeDraft(draft);
+      setUserInterjectionText("");
+      setInteractiveStatus({
+        sessionId: interactiveSessionId,
+        status: "running",
+        message: "已插入你的发言，中控 agent 正在重排后续嘉宾回应。",
+        draft
+      });
+      setJob({ id: "job-user-turn", type: "draft", status: "running", message: "用户发言已插入，正在继续互动圆桌" });
+    } catch (error) {
+      setJob({ id: "job-user-turn", type: "draft", status: "failed", message: formatError(error, "提交用户发言失败") });
+    }
+  }
+
+  async function finishInteractiveDraft() {
+    if (!interactiveSessionId) return;
+    try {
+      const draft = await finishInteractiveRoundtable(interactiveSessionId);
+      setEpisodeDraft(draft);
+      setInteractiveStatus({
+        sessionId: interactiveSessionId,
+        status: "finished",
+        message: "互动圆桌已收束，可以保存草稿。",
+        draft
+      });
+      setJob({ id: "job-interactive-finish", type: "draft", status: "succeeded", message: "互动圆桌已收束" });
+    } catch (error) {
+      setJob({ id: "job-interactive-finish", type: "draft", status: "failed", message: formatError(error, "结束互动圆桌失败") });
+    }
+  }
+
+  async function transcribeVoiceInterjection(audioBase64: string) {
+    try {
+      setIsVoiceTranscribing(true);
+      const text = await transcribeAudioWithParaformer(asrSettings, audioBase64);
+      setUserInterjectionText((current) => `${current}${current.trim() ? "\n" : ""}${text}`.trim());
+      setJob({ id: "job-asr", type: "fetch", status: "succeeded", message: "语音已转成文字，请确认后发送" });
+    } catch (error) {
+      setJob({ id: "job-asr", type: "fetch", status: "failed", message: formatError(error, "语音转文字失败，可继续使用文字输入") });
+    } finally {
+      setIsVoiceTranscribing(false);
+    }
+  }
+
   async function saveDraft() {
     if (!episodeDraft) {
       setJob({ id: "job-save", type: "save", status: "failed", message: "当前没有可保存的草稿" });
@@ -767,6 +923,22 @@ function App() {
     };
   }
 
+  function interactiveProviderSettings(): ProviderSettings | undefined {
+    const settings = currentProviderSettings();
+    if (!settings.apiKey || !settings.selectedModel) {
+      return {
+        providerId: "mock",
+        baseUrl: "local",
+        selectedModel: "mock-interactive",
+        draftGenerationMode: "multi_agent"
+      };
+    }
+    return {
+      ...settings,
+      draftGenerationMode: "multi_agent"
+    };
+  }
+
   const showBlockingProgress = job.status === "running" && job.type !== "draft";
 
   return (
@@ -863,6 +1035,7 @@ function App() {
               <PlanView
                 discussionDepth={discussionDepth}
                 onGenerateDraft={generateDraft}
+                onStartInteractiveDraft={startInteractiveDraft}
                 onGeneratePlan={generatePlan}
                 onDiscussionDepthChange={setDiscussionDepth}
                 onAddSupplementalDocument={addSupplementalDocument}
@@ -876,11 +1049,21 @@ function App() {
             {activeView === "draft" && (
               <DraftEditor
                 agentProgress={agentProgress}
+                asrSettings={asrSettings}
                 draft={episodeDraft}
+                interactiveSessionId={interactiveSessionId}
+                interactiveStatus={interactiveStatus}
                 isGenerating={job.status === "running" && job.type === "draft"}
+                isVoiceTranscribing={isVoiceTranscribing}
                 job={job}
                 lastSavedPath={lastSavedPath}
+                onFinishInteractive={finishInteractiveDraft}
+                onInterruptInteractive={interruptInteractiveDraft}
                 onSaveDraft={saveDraft}
+                onSubmitUserTurn={submitInteractiveText}
+                onTranscribeVoice={transcribeVoiceInterjection}
+                userInterjectionText={userInterjectionText}
+                onUserInterjectionTextChange={setUserInterjectionText}
               />
             )}
             {activeView === "history" && (
@@ -898,6 +1081,7 @@ function App() {
               <SettingsView
                 agentRuntimeSettings={agentRuntimeSettings}
                 appDataDir={appDataDir}
+                asrSettings={asrSettings}
                 modelCatalog={modelCatalog}
                 onModelChange={setSelectedModel}
                 onProviderChange={(providerId) => {
@@ -912,6 +1096,16 @@ function App() {
                 onRefreshFromProvider={refreshModelsFromProvider}
                 onRefreshModels={refreshModelCatalog}
                 onSaveAgentSettings={saveAgentSettings}
+                onSaveAsrSettings={async (settings) => {
+                  try {
+                    setJob({ id: "job-asr-save", type: "save", status: "running", message: "正在保存 ASR 设置" });
+                    const saved = await saveAsrSettings(settings);
+                    setAsrSettings(saved);
+                    setJob({ id: "job-asr-save", type: "save", status: "succeeded", message: "ASR 设置已保存" });
+                  } catch (error) {
+                    setJob({ id: "job-asr-save", type: "save", status: "failed", message: formatError(error, "保存 ASR 设置失败") });
+                  }
+                }}
                 onSaveSettings={saveSettings}
                 onSaveTtsSettings={saveTtsAudioSettings}
                 providerSettings={providerSettings}
@@ -1006,8 +1200,9 @@ function draftToMarkdown(draft: EpisodeDraft) {
     .join("\n");
   const dialogueLines = draft.dialogue
     .map((turn, index) => {
-      const guest = draft.guests.find((item) => item.id === turn.speakerId);
-      return `### ${index + 1}. ${guest?.label ?? turn.speakerId}\n\n${turn.text}`;
+      const label = dialogueSpeakerLabel(draft, turn);
+      const marker = turn.interrupted ? "（被用户打断）" : "";
+      return `### ${index + 1}. ${label}${marker}\n\n${turn.text}`;
     })
     .join("\n\n");
   return `# ${draft.title}
@@ -1049,8 +1244,8 @@ function escapeHtml(value: string) {
 function draftToHtmlDocument(draft: EpisodeDraft) {
   const turns = draft.dialogue
     .map((turn) => {
-      const guest = draft.guests.find((item) => item.id === turn.speakerId);
-      return `<article class="turn"><div><span>${escapeHtml(guest?.label ?? turn.speakerId)}</span><small>${escapeHtml(turn.intent)}</small></div><p>${escapeHtml(turn.text)}</p></article>`;
+      const label = dialogueSpeakerLabel(draft, turn);
+      return `<article class="turn"><div><span>${escapeHtml(label)}</span><small>${escapeHtml(turn.interrupted ? "被用户打断" : turn.intent)}</small></div><p>${escapeHtml(turn.text)}</p></article>`;
     })
     .join("");
   const sources = draft.sources
@@ -1091,6 +1286,22 @@ function draftToHtmlDocument(draft: EpisodeDraft) {
   </head>
   <body><main><section class="contentPane"><div class="viewStack"><section class="detailTitleBlock"><p class="eyebrow">圆桌详情</p><h1>${escapeHtml(draft.title)}</h1><p class="sectionMeta">生成时间：${escapeHtml(formatDateTimeCn(draft.createdAt))} · 更新时间：${escapeHtml(formatDateTimeCn(draft.updatedAt))}</p></section><p class="summary">${escapeHtml(draft.summary)}</p><div class="dialogueFlow">${turns}</div><div class="historySources"><h2>来源</h2>${sources}</div></div></section></main></body>
 </html>`;
+}
+
+function dialogueSpeakerLabel(draft: EpisodeDraft, turn: DialogueTurn) {
+  if (turn.speakerId === "user") return "你";
+  return draft.guests.find((item) => item.id === turn.speakerId)?.label ?? turn.speakerId;
+}
+
+function interactiveActiveSpeakerLabel(draft: EpisodeDraft, status: InteractiveSessionEvent | null) {
+  if (status?.activeSpeakerId) {
+    if (status.activeSpeakerId === "user") return "等待你的发言";
+    const guest = draft.guests.find((item) => item.id === status.activeSpeakerId);
+    return guest ? `${guest.label}正在发言` : `${status.activeSpeakerId} 正在发言`;
+  }
+  const lastTurn = draft.dialogue[draft.dialogue.length - 1];
+  if (lastTurn) return `${dialogueSpeakerLabel(draft, lastTurn)}刚刚发言`;
+  return "中控 Agent 正在调度";
 }
 
 function draftToExportElement(draft: EpisodeDraft) {
@@ -1137,13 +1348,14 @@ async function draftToPdfBase64(draft: EpisodeDraft) {
     let rendered = 0;
     let page = 0;
     while (rendered < canvas.height) {
+      const sliceHeight = Math.min(sourcePageHeight, canvas.height - rendered);
+      pageCanvas.height = sliceHeight;
       pageContext.fillStyle = "#080b0f";
       pageContext.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
-      pageContext.drawImage(canvas, 0, rendered, canvas.width, sourcePageHeight, 0, 0, canvas.width, sourcePageHeight);
+      pageContext.drawImage(canvas, 0, rendered, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
       if (page > 0) pdf.addPage();
       const pageData = pageCanvas.toDataURL("image/jpeg", 0.92);
-      const remainingHeight = canvas.height - rendered;
-      const outputHeight = remainingHeight < sourcePageHeight ? (remainingHeight * imageWidth) / canvas.width : pageHeight - margin * 2;
+      const outputHeight = (sliceHeight * imageWidth) / canvas.width;
       pdf.addImage(pageData, "JPEG", margin, margin, imageWidth, outputHeight);
       rendered += sourcePageHeight;
       page += 1;
@@ -1270,6 +1482,14 @@ function appendTokenToTurns(turns: DialogueTurn[], turn: DialogueTurn, textDelta
       text: textDelta
     }
   ];
+}
+
+function upsertFinalTurn(turns: DialogueTurn[], turn: DialogueTurn) {
+  const last = turns[turns.length - 1];
+  if (last && last.speakerId === turn.speakerId && last.intent === turn.intent && (last.text === turn.text || turn.text.startsWith(last.text))) {
+    return [...turns.slice(0, -1), turn];
+  }
+  return [...turns, turn];
 }
 
 function StatusPill({ label, value, tone }: { label: string; value: string; tone: "success" | "warning" | "danger" | "neutral" }) {
@@ -1741,6 +1961,7 @@ function PlanView({
   onDiscussionDepthChange,
   onGenerateDraft,
   onGeneratePlan,
+  onStartInteractiveDraft,
   onUpdateAgenda,
   onUpdateTension
 }: {
@@ -1752,6 +1973,7 @@ function PlanView({
   onDiscussionDepthChange: (depth: DiscussionDepth) => void;
   onGenerateDraft: () => void;
   onGeneratePlan: () => void;
+  onStartInteractiveDraft: () => void;
   onUpdateAgenda: (index: number, value: string) => void;
   onUpdateTension: (index: number, value: string) => void;
 }) {
@@ -1773,6 +1995,10 @@ function PlanView({
         <button className="primaryButton" onClick={onGenerateDraft} type="button">
           <Sparkles size={16} />
           生成圆桌稿
+        </button>
+        <button className="primaryButton" onClick={onStartInteractiveDraft} type="button">
+          <Mic size={16} />
+          互动圆桌
         </button>
       </section>
       <section className="agentPrepPanel">
@@ -1838,25 +2064,66 @@ function PlanView({
 
 function DraftEditor({
   agentProgress,
+  asrSettings,
   draft,
+  interactiveSessionId,
+  interactiveStatus,
   isGenerating,
+  isVoiceTranscribing,
   job,
   lastSavedPath,
-  onSaveDraft
+  onFinishInteractive,
+  onInterruptInteractive,
+  onSaveDraft,
+  onSubmitUserTurn,
+  onTranscribeVoice,
+  onUserInterjectionTextChange,
+  userInterjectionText
 }: {
   agentProgress: Record<string, AgentProgressEvent>;
+  asrSettings: AsrSettings;
   draft: EpisodeDraft | null;
+  interactiveSessionId: string;
+  interactiveStatus: InteractiveSessionEvent | null;
   isGenerating: boolean;
+  isVoiceTranscribing: boolean;
   job: GenerationJob;
   lastSavedPath: string;
+  onFinishInteractive: () => void;
+  onInterruptInteractive: () => void;
   onSaveDraft: () => void;
+  onSubmitUserTurn: (text: string) => void;
+  onTranscribeVoice: (audioBase64: string) => void;
+  onUserInterjectionTextChange: (text: string) => void;
+  userInterjectionText: string;
 }) {
+  const controllerProgress = agentProgress.controller;
+  const activeTurnProgress = currentTurnProgress(agentProgress);
+  const isInteractive = Boolean(interactiveSessionId);
+  const canInterrupt = isInteractive && interactiveStatus?.status === "running";
+  const canSendUserTurn = isInteractive && (interactiveStatus?.status === "awaiting_user" || interactiveStatus?.status === "interrupted");
+  const latestTurnRef = useRef<HTMLElement>(null);
+  const composerRef = useRef<HTMLElement>(null);
+  const latestTurn = draft?.dialogue[draft.dialogue.length - 1];
+  const latestTurnScrollKey = [
+    draft?.id ?? "",
+    draft?.dialogue.length ?? 0,
+    latestTurn?.speakerId ?? "",
+    latestTurn?.intent ?? "",
+    latestTurn?.text.length ?? 0,
+    interactiveStatus?.status ?? "",
+    interactiveStatus?.activeSpeakerId ?? ""
+  ].join(":");
+
+  useEffect(() => {
+    if (!draft || !isInteractive) return;
+    const target = canSendUserTurn ? composerRef.current : latestTurnRef.current;
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [canSendUserTurn, draft, isInteractive, latestTurnScrollKey]);
+
   if (!draft) {
     return <EmptyState title="还没有圆桌稿" text="先选择热点，生成圆桌议程，再生成稿件。" />;
   }
-
-  const controllerProgress = agentProgress.controller;
-  const activeTurnProgress = currentTurnProgress(agentProgress);
 
   return (
     <div className="viewStack">
@@ -1865,12 +2132,26 @@ function DraftEditor({
           <p className="eyebrow">圆桌稿</p>
           <h2>{draft.title}</h2>
         </div>
-        <button className="primaryButton" disabled={isGenerating} onClick={onSaveDraft} type="button">
-          <Save size={16} />
-          保存草稿
-        </button>
+        <div className="buttonGroup">
+          {isInteractive && (
+            <button className="ghostButton" onClick={onFinishInteractive} type="button">
+              <CheckCircle2 size={16} />
+              结束互动
+            </button>
+          )}
+          <button className="primaryButton" disabled={isGenerating && !isInteractive} onClick={onSaveDraft} type="button">
+            <Save size={16} />
+            保存草稿
+          </button>
+        </div>
       </section>
       {lastSavedPath && <p className="savePath">已保存到：{lastSavedPath}</p>}
+      {isInteractive && (
+        <InteractiveLiveControl
+          activeSpeakerLabel={interactiveActiveSpeakerLabel(draft, interactiveStatus)}
+          status={interactiveStatus}
+        />
+      )}
       {isGenerating && (
         <InlineDraftProgress controllerProgress={controllerProgress} job={job} activeTurnProgress={activeTurnProgress} />
       )}
@@ -1880,26 +2161,66 @@ function DraftEditor({
           <div className="streamingDraftEmpty">
             <span className="inlineSpinner" />
             <p>{activeTurnProgress ? progressMessage(activeTurnProgress) : "Controller agent is planning the roundtable..."}</p>
+            {canInterrupt && (
+              <button className="inlineInterruptButton" onClick={onInterruptInteractive} type="button">
+                <Mic size={16} />
+                打断当前发言
+              </button>
+            )}
           </div>
         )}
         {draft.dialogue.map((turn, index) => {
           const guest = draft.guests.find((item) => item.id === turn.speakerId);
+          const speakerLabel = turn.speakerId === "user" ? "你" : guest?.label ?? turn.speakerId;
           const turnProgress = activeTurnProgress?.turnIndex === index + 1 ? activeTurnProgress : undefined;
+          const canInterruptThisTurn =
+            canInterrupt && index === draft.dialogue.length - 1 && turn.speakerId !== "user" && !turn.interrupted;
           return (
-            <article className="turn" key={`${turn.speakerId}-${index}`}>
+            <article
+              className={`turn ${turn.speakerId === "user" ? "userTurn" : ""} ${turn.interrupted ? "interruptedTurn" : ""}`}
+              key={`${turn.speakerId}-${index}`}
+              ref={index === draft.dialogue.length - 1 ? latestTurnRef : undefined}
+            >
               <div>
-                <span>{guest?.label}</span>
-                <small>{turn.intent}</small>
+                <span>{speakerLabel}</span>
+                <small>{turn.interrupted ? "被用户打断" : turn.intent}</small>
               </div>
               <div className="turnBody">
                 {turnProgress && turnProgress.status === "running" && <TurnProgressLine progress={turnProgress} />}
                 <p>{turn.text}</p>
+                {canInterruptThisTurn && (
+                  <div className="turnLiveActions">
+                    <button className="inlineInterruptButton" onClick={onInterruptInteractive} type="button">
+                      <Mic size={16} />
+                      打断当前发言
+                    </button>
+                  </div>
+                )}
               </div>
             </article>
           );
         })}
         {isGenerating && activeTurnProgress?.turnIndex && activeTurnProgress.turnIndex > draft.dialogue.length && (
-          <PendingTurnProgress draft={draft} progress={activeTurnProgress} />
+          <PendingTurnProgress
+            canInterrupt={canInterrupt}
+            draft={draft}
+            onInterrupt={onInterruptInteractive}
+            progress={activeTurnProgress}
+          />
+        )}
+        {canSendUserTurn && (
+          <section className="interactiveComposerAnchor transcriptComposer" ref={composerRef}>
+            <InteractiveComposer
+              asrSettings={asrSettings}
+              canSend={canSendUserTurn}
+              isVoiceTranscribing={isVoiceTranscribing}
+              status={interactiveStatus}
+              text={userInterjectionText}
+              onChange={onUserInterjectionTextChange}
+              onSubmit={onSubmitUserTurn}
+              onTranscribeVoice={onTranscribeVoice}
+            />
+          </section>
         )}
       </div>
       <div className="takeaways">
@@ -1947,7 +2268,17 @@ function InlineDraftProgress({
   );
 }
 
-function PendingTurnProgress({ draft, progress }: { draft: EpisodeDraft; progress: AgentProgressEvent }) {
+function PendingTurnProgress({
+  canInterrupt,
+  draft,
+  onInterrupt,
+  progress
+}: {
+  canInterrupt: boolean;
+  draft: EpisodeDraft;
+  onInterrupt: () => void;
+  progress: AgentProgressEvent;
+}) {
   const guest = draft.guests.find((item) => item.id === progress.agentId);
   return (
     <article className="turn pendingTurn">
@@ -1958,6 +2289,14 @@ function PendingTurnProgress({ draft, progress }: { draft: EpisodeDraft; progres
       <div className="turnBody">
         <TurnProgressLine progress={progress} />
         <p className="mutedText">This turn will start streaming into the draft shortly.</p>
+        {canInterrupt && (
+          <div className="turnLiveActions">
+            <button className="inlineInterruptButton" onClick={onInterrupt} type="button">
+              <Mic size={16} />
+              打断当前发言
+            </button>
+          </div>
+        )}
       </div>
     </article>
   );
@@ -1970,6 +2309,108 @@ function TurnProgressLine({ progress }: { progress: AgentProgressEvent }) {
       <strong>{progressPhase(progress)}</strong>
       <small>{progressMessage(progress)}</small>
     </div>
+  );
+}
+
+function InteractiveLiveControl({
+  activeSpeakerLabel,
+  status
+}: {
+  activeSpeakerLabel: string;
+  status: InteractiveSessionEvent | null;
+}) {
+  return (
+    <section className="interactiveLiveControl" aria-live="polite">
+      <div className="interactiveLiveStatus">
+        <span className={`interactiveStatus ${status?.status ?? "idle"}`}>{status?.status ?? "idle"}</span>
+        <div>
+          <strong>{activeSpeakerLabel}</strong>
+          <p>{status?.message ?? "AI 嘉宾正在发言。"}</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function InteractiveComposer({
+  asrSettings,
+  canSend,
+  isVoiceTranscribing,
+  onChange,
+  onSubmit,
+  onTranscribeVoice,
+  status,
+  text
+}: {
+  asrSettings: AsrSettings;
+  canSend: boolean;
+  isVoiceTranscribing: boolean;
+  onChange: (text: string) => void;
+  onSubmit: (text: string) => void;
+  onTranscribeVoice: (audioBase64: string) => void;
+  status: InteractiveSessionEvent | null;
+  text: string;
+}) {
+  const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const canUseVoice = Boolean(asrSettings.apiKey?.trim());
+
+  async function toggleRecording() {
+    if (isRecording && recorder) {
+      recorder.stop();
+      return;
+    }
+    if (!canUseVoice) return;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const nextRecorder = new MediaRecorder(stream);
+    const chunks: Blob[] = [];
+    nextRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+    nextRecorder.onstop = () => {
+      setIsRecording(false);
+      stream.getTracks().forEach((track) => track.stop());
+      const blob = new Blob(chunks, { type: nextRecorder.mimeType || "audio/webm" });
+      const reader = new FileReader();
+      reader.onload = () => {
+        const value = String(reader.result ?? "");
+        onTranscribeVoice(value.includes(",") ? value.split(",")[1] : value);
+      };
+      reader.readAsDataURL(blob);
+    };
+    setRecorder(nextRecorder);
+    setIsRecording(true);
+    nextRecorder.start();
+  }
+
+  return (
+    <section className="interactiveComposer">
+      <div className="interactiveComposerHeader">
+        <div>
+          <strong>你的嘉宾发言</strong>
+          <span>{status?.message ?? "点击打断后，可以用文字或语音插入你的观点。"}</span>
+        </div>
+        <span className={`interactiveStatus ${status?.status ?? "idle"}`}>{status?.status ?? "idle"}</span>
+      </div>
+      <textarea
+        disabled={!canSend}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={canSend ? "输入你的想法，发送后中控 agent 会重排后续发言。" : "等待打断当前 AI 发言后输入。"}
+        rows={4}
+        value={text}
+      />
+      <div className="interactiveActions">
+        <button className="ghostButton" disabled={!canSend || !canUseVoice || isVoiceTranscribing} onClick={toggleRecording} type="button">
+          <Mic size={16} />
+          {isRecording ? "停止录音" : isVoiceTranscribing ? "转写中" : "语音转文字"}
+        </button>
+        <button className="primaryButton" disabled={!canSend || !text.trim()} onClick={() => onSubmit(text)} type="button">
+          <Sparkles size={16} />
+          发送并继续
+        </button>
+      </div>
+      {!canUseVoice && <p className="mutedText">语音转文字需要在设置里保存 DashScope Paraformer API Key；文字打断可直接使用。</p>}
+    </section>
   );
 }
 
@@ -2205,12 +2646,12 @@ function HistoryDraftDetail({
       )}
       <div className="dialogueFlow">
         {editableDraft.dialogue.map((turn, index) => {
-          const guest = editableDraft.guests.find((item) => item.id === turn.speakerId);
+          const label = dialogueSpeakerLabel(editableDraft, turn);
           return (
-            <article className="turn" key={`${turn.speakerId}-${index}`}>
+            <article className={`turn ${turn.speakerId === "user" ? "userTurn" : ""} ${turn.interrupted ? "interruptedTurn" : ""}`} key={`${turn.speakerId}-${index}`}>
               <div>
-                <span>{guest?.label}</span>
-                <small>{turn.intent}</small>
+                <span>{label}</span>
+                <small>{turn.interrupted ? "被用户打断" : turn.intent}</small>
               </div>
               {isEditing ? (
                 <textarea className="turnEditInput" rows={5} value={turn.text} onChange={(event) => updateTurn(index, event.target.value)} />
@@ -2373,6 +2814,7 @@ function activityProgress(job: GenerationJob, _mode: DraftGenerationMode, elapse
 function SettingsView({
   agentRuntimeSettings,
   appDataDir,
+  asrSettings,
   draftGenerationMode,
   modelCatalog,
   onDraftGenerationModeChange,
@@ -2381,6 +2823,7 @@ function SettingsView({
   onRefreshFromProvider,
   onRefreshModels,
   onSaveAgentSettings,
+  onSaveAsrSettings,
   onSaveSettings,
   onSaveTtsSettings,
   providerSettings,
@@ -2390,6 +2833,7 @@ function SettingsView({
 }: {
   agentRuntimeSettings: AgentRuntimeSettings;
   appDataDir: string;
+  asrSettings: AsrSettings;
   draftGenerationMode: DraftGenerationMode;
   modelCatalog: ModelProvider[];
   onDraftGenerationModeChange: (mode: DraftGenerationMode) => void;
@@ -2398,6 +2842,7 @@ function SettingsView({
   onRefreshFromProvider: (settings: ProviderSettings) => void;
   onRefreshModels: () => void;
   onSaveAgentSettings: (settings: AgentRuntimeSettings) => void;
+  onSaveAsrSettings: (settings: AsrSettings) => void;
   onSaveSettings: (settings: ProviderSettings) => void;
   onSaveTtsSettings: (settings: TtsSettings) => void;
   providerSettings: ProviderSettings[];
@@ -2405,7 +2850,7 @@ function SettingsView({
   selectedProviderId: string;
   ttsSettings: TtsSettings;
 }) {
-  const [activeSettingsTab, setActiveSettingsTab] = useState<"roundtable" | "agent" | "tts">("roundtable");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<"roundtable" | "agent" | "tts" | "asr">("roundtable");
   const provider = modelCatalog.find((item) => item.id === selectedProviderId);
   const savedSettings = providerSettings.find((item) => item.providerId === selectedProviderId);
   const [apiKey, setApiKey] = useState("");
@@ -2414,6 +2859,9 @@ function SettingsView({
   const [ttsApiKey, setTtsApiKey] = useState(ttsSettings.apiKey ?? "");
   const [ttsBaseUrl, setTtsBaseUrl] = useState(ttsSettings.baseUrl);
   const [ttsModel, setTtsModel] = useState(ttsSettings.selectedModel);
+  const [asrApiKey, setAsrApiKey] = useState(asrSettings.apiKey ?? "");
+  const [asrBaseUrl, setAsrBaseUrl] = useState(asrSettings.baseUrl);
+  const [asrModel, setAsrModel] = useState(asrSettings.selectedModel);
   const [agentSettingsDraft, setAgentSettingsDraft] = useState<AgentRuntimeSettings>(agentRuntimeSettings);
   const ttsProvider = TTS_PROVIDER_OPTIONS.find((item) => item.id === ttsProviderId) ?? TTS_PROVIDER_OPTIONS[0];
 
@@ -2428,6 +2876,12 @@ function SettingsView({
     setTtsBaseUrl(ttsSettings.baseUrl);
     setTtsModel(ttsSettings.selectedModel);
   }, [ttsSettings.apiKey, ttsSettings.baseUrl, ttsSettings.providerId, ttsSettings.selectedModel]);
+
+  useEffect(() => {
+    setAsrApiKey(asrSettings.apiKey ?? "");
+    setAsrBaseUrl(asrSettings.baseUrl);
+    setAsrModel(asrSettings.selectedModel);
+  }, [asrSettings.apiKey, asrSettings.baseUrl, asrSettings.selectedModel]);
 
   useEffect(() => {
     setAgentSettingsDraft(agentRuntimeSettings);
@@ -2447,6 +2901,12 @@ function SettingsView({
     baseUrl: ttsBaseUrl,
     apiKey: ttsApiKey,
     selectedModel: normalizedTtsModel
+  };
+  const currentAsrSettings: AsrSettings = {
+    providerId: "dashscope",
+    baseUrl: asrBaseUrl,
+    apiKey: asrApiKey,
+    selectedModel: asrModel
   };
   const ttsModelOptions = ttsProvider.id === "dashscope" || ttsProvider.models.includes(ttsModel) ? ttsProvider.models : [ttsModel, ...ttsProvider.models];
   function handleTtsProviderChange(providerId: TtsSettings["providerId"]) {
@@ -2469,6 +2929,9 @@ function SettingsView({
         </button>
         <button className={activeSettingsTab === "tts" ? "active" : ""} onClick={() => setActiveSettingsTab("tts")} type="button">
           TTS 配音
+        </button>
+        <button className={activeSettingsTab === "asr" ? "active" : ""} onClick={() => setActiveSettingsTab("asr")} type="button">
+          ASR 转写
         </button>
       </div>
 
@@ -2642,7 +3105,7 @@ function SettingsView({
           </label>
           <p className="mutedText">Search API 使用通用 JSON 接口：请求包含 <code>query</code>、<code>maxResults</code>、<code>language</code>、<code>recencyDays</code>，响应可以是数组或 <code>{"{ results: [...] }"}</code>。</p>
         </>
-      ) : (
+      ) : activeSettingsTab === "tts" ? (
         <>
           <section className="sectionHeader compactHeader">
             <div>
@@ -2690,6 +3153,44 @@ function SettingsView({
           {ttsProviderId === "dashscope" && normalizedTtsModel === "cosyvoice-v3.5-plus" && (
             <p className="mutedText">CosyVoice v3.5 plus 如果提示音色不可用，需要在 <code>personas.json</code> 的 <code>cosyVoice</code> 字段填写你在百炼里创建的声音复刻或声音设计音色 ID。</p>
           )}
+        </>
+      ) : (
+        <>
+          <section className="sectionHeader compactHeader">
+            <div>
+              <h2>Paraformer 语音转文字</h2>
+              <p className="sectionMeta">用于互动圆桌里把你的语音打断转成文字；发送前仍需你确认文本。</p>
+            </div>
+            <div className="buttonGroup">
+              <button className="primaryButton" onClick={() => onSaveAsrSettings(currentAsrSettings)} type="button">
+                <Save size={16} />
+                保存 ASR 设置
+              </button>
+            </div>
+          </section>
+          <label>
+            ASR 厂商
+            <input value="DashScope Paraformer" readOnly />
+          </label>
+          <label>
+            ASR 模型
+            <input value={asrModel} onChange={(event) => setAsrModel(event.target.value)} />
+          </label>
+          <label>
+            WebSocket Base URL
+            <input value={asrBaseUrl} onChange={(event) => setAsrBaseUrl(event.target.value)} />
+          </label>
+          <label>
+            API Key
+            <input
+              autoComplete="off"
+              placeholder="填写 DashScope API Key；不填写时语音按钮不可用，文字打断仍可用"
+              type="password"
+              value={asrApiKey}
+              onChange={(event) => setAsrApiKey(event.target.value)}
+            />
+          </label>
+          <p className="mutedText">默认模型为 <code>paraformer-realtime-v2</code>。互动圆桌不会自动发送转写结果，必须由你确认后提交。</p>
         </>
       )}
 

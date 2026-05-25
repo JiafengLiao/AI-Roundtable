@@ -7,11 +7,16 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashMap},
     fs,
     hash::{Hash, Hasher},
     io::{Cursor, Read},
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+    thread,
     time::{Duration, Instant},
 };
 use tauri::{Emitter, Manager};
@@ -138,6 +143,12 @@ struct DialogueTurn {
     speaker_id: String,
     intent: String,
     text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    interrupted: bool,
+    #[serde(rename = "createdAt", default, skip_serializing_if = "Option::is_none")]
+    created_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -230,6 +241,18 @@ struct ProviderSettings {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct TtsSettings {
+    #[serde(rename = "providerId")]
+    provider_id: String,
+    #[serde(rename = "baseUrl")]
+    base_url: String,
+    #[serde(rename = "apiKey")]
+    api_key: Option<String>,
+    #[serde(rename = "selectedModel")]
+    selected_model: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AsrSettings {
     #[serde(rename = "providerId")]
     provider_id: String,
     #[serde(rename = "baseUrl")]
@@ -418,7 +441,7 @@ struct TurnPlanResponse {
     fact_checks: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct TurnPlanItem {
     #[serde(rename = "speakerId")]
     speaker_id: String,
@@ -481,6 +504,11 @@ struct ChatStreamDelta {
     content: Option<String>,
 }
 
+enum StreamTextOutcome {
+    Completed(String),
+    Cancelled(String),
+}
+
 #[derive(Debug, Serialize, Clone)]
 struct DraftDeltaEvent {
     #[serde(rename = "sessionId")]
@@ -490,6 +518,31 @@ struct DraftDeltaEvent {
     turn: Option<DialogueTurn>,
     #[serde(rename = "textDelta", skip_serializing_if = "Option::is_none")]
     text_delta: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct InteractiveSessionEvent {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    status: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    draft: Option<EpisodeDraft>,
+    #[serde(rename = "activeSpeakerId", skip_serializing_if = "Option::is_none")]
+    active_speaker_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct InteractiveRoundtableSession {
+    plan: RoundtablePlan,
+    hotspot: HotspotCandidate,
+    settings: Option<ProviderSettings>,
+    prompt_config: LlmPromptConfig,
+    draft: EpisodeDraft,
+    cancel_current_turn: Arc<AtomicBool>,
+    status: String,
+    active_speaker_id: Option<String>,
+    next_run_id: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -650,10 +703,53 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn stable_id(prefix: &str, value: &str) -> String {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
     format!("{prefix}-{:x}", hasher.finish())
+}
+
+fn user_dialogue_turn(text: &str) -> DialogueTurn {
+    DialogueTurn {
+        speaker_id: "user".into(),
+        intent: "user_input".into(),
+        text: text.trim().to_string(),
+        source: Some("user".into()),
+        interrupted: false,
+        created_at: Some(now()),
+    }
+}
+
+fn ai_dialogue_turn(speaker_id: &str, intent: &str, text: &str) -> DialogueTurn {
+    DialogueTurn {
+        speaker_id: speaker_id.into(),
+        intent: intent.into(),
+        text: text.trim().to_string(),
+        source: Some("ai".into()),
+        interrupted: false,
+        created_at: Some(now()),
+    }
+}
+
+fn interrupted_ai_turn(speaker_id: &str, intent: &str, text: &str) -> DialogueTurn {
+    DialogueTurn {
+        interrupted: true,
+        ..ai_dialogue_turn(speaker_id, intent, text)
+    }
+}
+
+fn is_ai_guest_speaker(speaker_id: &str) -> bool {
+    matches!(speaker_id, "host" | "participant" | "investor" | "expert")
+}
+
+fn interactive_sessions() -> &'static Mutex<HashMap<String, InteractiveRoundtableSession>> {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, InteractiveRoundtableSession>>> =
+        OnceLock::new();
+    SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn strip_html(value: &str) -> String {
@@ -782,6 +878,10 @@ fn tts_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("tts-settings.json"))
 }
 
+fn asr_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("asr-settings.json"))
+}
+
 fn llm_logs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = data_dir(app)?.join("llm-logs");
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
@@ -905,6 +1005,38 @@ fn style_replacements(prompt_config: &LlmPromptConfig) -> Vec<(&'static str, Str
             prompt_config.style_guide.safety_rules.join("\n- "),
         ),
     ]
+}
+
+fn sanitize_for_deepseek_plan_prompt(value: &str) -> String {
+    value
+        .replace("杀手级", "爆款级")
+        .replace("打断", "插话")
+        .replace("真实的人", "自然的嘉宾")
+        .replace("像四个真实的", "像四位自然的")
+}
+
+fn maybe_sanitize_deepseek_plan_value(provider_id: &str, value: String) -> String {
+    if provider_id == "deepseek" {
+        sanitize_for_deepseek_plan_prompt(&value)
+    } else {
+        value
+    }
+}
+
+fn style_replacements_for_provider(
+    prompt_config: &LlmPromptConfig,
+    provider_id: &str,
+    task: &str,
+) -> Vec<(&'static str, String)> {
+    let replacements = style_replacements(prompt_config);
+    if provider_id != "deepseek" || task != "plan" {
+        return replacements;
+    }
+
+    replacements
+        .into_iter()
+        .map(|(key, value)| (key, sanitize_for_deepseek_plan_prompt(&value)))
+        .collect()
 }
 
 fn response_format(schema: &JsonSchemaSpec) -> serde_json::Value {
@@ -1310,6 +1442,38 @@ fn openai_chat_text_stream(
     temperature: f32,
     mut on_delta: impl FnMut(&str),
 ) -> Result<String, String> {
+    match openai_chat_text_stream_until_cancelled(
+        client,
+        url,
+        provider_id,
+        log_dir,
+        task,
+        api_key,
+        model,
+        system_prompt,
+        user_prompt,
+        temperature,
+        |delta| on_delta(delta),
+        || false,
+    )? {
+        StreamTextOutcome::Completed(text) | StreamTextOutcome::Cancelled(text) => Ok(text),
+    }
+}
+
+fn openai_chat_text_stream_until_cancelled(
+    client: &Client,
+    url: &str,
+    provider_id: &str,
+    log_dir: Option<&Path>,
+    task: &str,
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    user_prompt: String,
+    temperature: f32,
+    mut on_delta: impl FnMut(&str),
+    mut should_cancel: impl FnMut() -> bool,
+) -> Result<StreamTextOutcome, String> {
     let body = json!({
         "model": model,
         "messages": [
@@ -1338,6 +1502,10 @@ fn openai_chat_text_stream(
     let mut pending = String::new();
     let mut content = String::new();
     loop {
+        if should_cancel() {
+            write_llm_log(log_dir, task, provider_id, model, &body, None, Some(&content), Some("stream_cancelled_by_user"));
+            return Ok(StreamTextOutcome::Cancelled(content));
+        }
         let read = response.read(&mut buffer).map_err(|error| error.to_string())?;
         if read == 0 {
             break;
@@ -1352,7 +1520,7 @@ fn openai_chat_text_stream(
             let data = data.trim();
             if data == "[DONE]" {
                 write_llm_log(log_dir, task, provider_id, model, &body, None, Some(&content), None);
-                return Ok(content);
+                return Ok(StreamTextOutcome::Completed(content));
             }
             if let Ok(chunk) = serde_json::from_str::<ChatCompletionStreamResponse>(data) {
                 for choice in chunk.choices {
@@ -1360,6 +1528,10 @@ fn openai_chat_text_stream(
                         if !delta.is_empty() {
                             on_delta(&delta);
                             content.push_str(&delta);
+                            if should_cancel() {
+                                write_llm_log(log_dir, task, provider_id, model, &body, None, Some(&content), Some("stream_cancelled_by_user"));
+                                return Ok(StreamTextOutcome::Cancelled(content));
+                            }
                         }
                     }
                 }
@@ -1367,7 +1539,7 @@ fn openai_chat_text_stream(
         }
     }
     write_llm_log(log_dir, task, provider_id, model, &body, None, Some(&content), None);
-    Ok(content)
+    Ok(StreamTextOutcome::Completed(content))
 }
 
 fn get_or_seed_feeds(app: &tauri::AppHandle) -> Result<Vec<FeedSource>, String> {
@@ -1647,6 +1819,9 @@ fn emit_draft_token(app: &tauri::AppHandle, session_id: &str, turn: &DialogueTur
                 speaker_id: turn.speaker_id.clone(),
                 intent: turn.intent.clone(),
                 text: String::new(),
+                source: turn.source.clone(),
+                interrupted: turn.interrupted,
+                created_at: turn.created_at.clone(),
             }),
             text_delta: Some(text_delta.into()),
         },
@@ -1760,12 +1935,24 @@ fn generate_plan_with_openai_compatible(
     let sources = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
     let guests =
         serde_json::to_string(&guest_personas(prompt_config)).map_err(|error| error.to_string())?;
-    let mut replacements = style_replacements(prompt_config);
+    let mut replacements = style_replacements_for_provider(prompt_config, provider_id, "plan");
     replacements.extend([
-        ("hotspotTitle", hotspot.title.clone()),
-        ("hotspotSummary", hotspot.summary.clone()),
-        ("sourcesJson", sources),
-        ("guestPersonasJson", guests),
+        (
+            "hotspotTitle",
+            maybe_sanitize_deepseek_plan_value(provider_id, hotspot.title.clone()),
+        ),
+        (
+            "hotspotSummary",
+            maybe_sanitize_deepseek_plan_value(provider_id, hotspot.summary.clone()),
+        ),
+        (
+            "sourcesJson",
+            maybe_sanitize_deepseek_plan_value(provider_id, sources),
+        ),
+        (
+            "guestPersonasJson",
+            maybe_sanitize_deepseek_plan_value(provider_id, guests),
+        ),
     ]);
     let prompt = prompt_for_provider(
         provider_id,
@@ -1898,6 +2085,650 @@ fn generate_episode_draft_impl(
 }
 
 #[tauri::command]
+fn start_interactive_roundtable(
+    app: tauri::AppHandle,
+    plan: RoundtablePlan,
+    hotspot: HotspotCandidate,
+    settings: Option<ProviderSettings>,
+    session_id: String,
+) -> Result<EpisodeDraft, String> {
+    let prompt_config = get_or_seed_prompt_config(Some(&app))?;
+    let session_id = if session_id.trim().is_empty() {
+        stable_id("interactive", &format!("{}{}{}", plan.id, hotspot.id, now()))
+    } else {
+        session_id
+    };
+    let draft = create_interactive_draft_shell(&session_id, &plan, &hotspot, &prompt_config);
+    let cancel_current_turn = Arc::new(AtomicBool::new(false));
+    let session = InteractiveRoundtableSession {
+        plan,
+        hotspot,
+        settings,
+        prompt_config,
+        draft: draft.clone(),
+        cancel_current_turn,
+        status: "running".into(),
+        active_speaker_id: None,
+        next_run_id: 1,
+    };
+
+    interactive_sessions()
+        .lock()
+        .map_err(|_| "互动圆桌会话状态已损坏".to_string())?
+        .insert(session_id.clone(), session);
+    emit_interactive_state(
+        &app,
+        &session_id,
+        "running",
+        "互动圆桌已启动，AI 嘉宾正在准备第一轮发言。",
+        Some(draft.clone()),
+        None,
+    );
+    spawn_interactive_generation(app, session_id);
+    Ok(draft)
+}
+
+#[tauri::command]
+fn interrupt_interactive_roundtable(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    let (draft, active_speaker_id) = {
+        let mut sessions = interactive_sessions()
+            .lock()
+            .map_err(|_| "互动圆桌会话状态已损坏".to_string())?;
+        let session = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| "找不到当前互动圆桌会话".to_string())?;
+        session.cancel_current_turn.store(true, Ordering::SeqCst);
+        session.status = "interrupted".into();
+        (session.draft.clone(), session.active_speaker_id.clone())
+    };
+    emit_interactive_state(
+        &app,
+        &session_id,
+        "interrupted",
+        "正在停止当前 AI 发言，稍后可输入你的观点。",
+        Some(draft),
+        active_speaker_id,
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn submit_interactive_user_turn(
+    app: tauri::AppHandle,
+    session_id: String,
+    text: String,
+) -> Result<EpisodeDraft, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("用户发言不能为空".into());
+    }
+    let draft = {
+        let mut sessions = interactive_sessions()
+            .lock()
+            .map_err(|_| "互动圆桌会话状态已损坏".to_string())?;
+        let session = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| "找不到当前互动圆桌会话".to_string())?;
+        session.cancel_current_turn.store(false, Ordering::SeqCst);
+        session.draft.dialogue.push(user_dialogue_turn(text));
+        session.draft.updated_at = now();
+        session.status = "running".into();
+        session.active_speaker_id = None;
+        session.next_run_id = session.next_run_id.saturating_add(1);
+        session.draft.clone()
+    };
+    emit_interactive_state(
+        &app,
+        &session_id,
+        "running",
+        "已插入你的发言，中控 agent 正在重排后续嘉宾回应。",
+        Some(draft.clone()),
+        None,
+    );
+    spawn_interactive_generation(app, session_id);
+    Ok(draft)
+}
+
+#[tauri::command]
+fn finish_interactive_roundtable(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<EpisodeDraft, String> {
+    let draft = {
+        let mut sessions = interactive_sessions()
+            .lock()
+            .map_err(|_| "互动圆桌会话状态已损坏".to_string())?;
+        let session = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| "找不到当前互动圆桌会话".to_string())?;
+        session.cancel_current_turn.store(true, Ordering::SeqCst);
+        session.status = "finished".into();
+        session.active_speaker_id = None;
+        finalize_interactive_draft(&mut session.draft, &session.prompt_config, &session.plan);
+        session.draft.clone()
+    };
+    emit_interactive_state(
+        &app,
+        &session_id,
+        "finished",
+        "互动圆桌已收束，可以保存草稿。",
+        Some(draft.clone()),
+        None,
+    );
+    Ok(draft)
+}
+
+fn create_interactive_draft_shell(
+    session_id: &str,
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    prompt_config: &LlmPromptConfig,
+) -> EpisodeDraft {
+    let current_time = now();
+    EpisodeDraft {
+        id: format!("interactive-{session_id}"),
+        title: format!("互动圆桌：{}", hotspot.title),
+        summary: "互动圆桌正在生成。用户可在 AI 嘉宾发言时打断，并以真实用户发言继续推进讨论。".into(),
+        status: "draft".into(),
+        plan_id: plan.id.clone(),
+        hotspot_id: hotspot.id.clone(),
+        sources: hotspot.sources.clone(),
+        guests: plan.guests.clone(),
+        dialogue: Vec::new(),
+        takeaways: prompt_config.fallbacks.takeaways.clone(),
+        fact_checks: plan.source_risks.clone(),
+        agent_trace: Vec::new(),
+        created_at: current_time.clone(),
+        updated_at: current_time,
+    }
+}
+
+fn finalize_interactive_draft(
+    draft: &mut EpisodeDraft,
+    prompt_config: &LlmPromptConfig,
+    plan: &RoundtablePlan,
+) {
+    if draft.takeaways.is_empty() {
+        draft.takeaways = prompt_config.fallbacks.takeaways.clone();
+    }
+    if draft.fact_checks.is_empty() {
+        draft.fact_checks = if plan.source_risks.is_empty() {
+            prompt_config.fallbacks.fact_checks.clone()
+        } else {
+            plan.source_risks.clone()
+        };
+    }
+    draft.summary = format!(
+        "本期互动圆桌共记录 {} 轮发言，其中用户发言 {} 轮。发布前请复核来源、事实风险和被打断发言的上下文。",
+        draft.dialogue.len(),
+        draft
+            .dialogue
+            .iter()
+            .filter(|turn| turn.source.as_deref() == Some("user") || turn.speaker_id == "user")
+            .count()
+    );
+    draft.updated_at = now();
+}
+
+fn spawn_interactive_generation(app: tauri::AppHandle, session_id: String) {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = run_interactive_generation_loop(app.clone(), session_id.clone()) {
+            let draft = interactive_sessions()
+                .lock()
+                .ok()
+                .and_then(|sessions| sessions.get(&session_id).map(|session| session.draft.clone()));
+            emit_interactive_state(
+                &app,
+                &session_id,
+                "failed",
+                &format!("互动圆桌生成失败：{error}"),
+                draft,
+                None,
+            );
+        }
+    });
+}
+
+fn run_interactive_generation_loop(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+    loop {
+        let snapshot = {
+            let mut sessions = interactive_sessions()
+                .lock()
+                .map_err(|_| "互动圆桌会话状态已损坏".to_string())?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| "找不到当前互动圆桌会话".to_string())?;
+            if session.status == "finished" || session.status == "awaiting_user" || session.status == "interrupted" {
+                return Ok(());
+            }
+            let ai_turns = session
+                .draft
+                .dialogue
+                .iter()
+                .filter(|turn| turn.source.as_deref() != Some("user") && turn.speaker_id != "user")
+                .count();
+            if ai_turns >= 12 {
+                session.status = "finished".into();
+                finalize_interactive_draft(&mut session.draft, &session.prompt_config, &session.plan);
+                let draft = session.draft.clone();
+                drop(sessions);
+                emit_interactive_state(
+                    &app,
+                    &session_id,
+                    "finished",
+                    "互动圆桌已达到本轮建议长度，可以保存或继续编辑。",
+                    Some(draft),
+                    None,
+                );
+                return Ok(());
+            }
+            session.cancel_current_turn.store(false, Ordering::SeqCst);
+            (
+                session.plan.clone(),
+                session.hotspot.clone(),
+                session.settings.clone(),
+                session.prompt_config.clone(),
+                session.draft.clone(),
+                Arc::clone(&session.cancel_current_turn),
+            )
+        };
+
+        let (plan, hotspot, settings, prompt_config, draft, cancel_current_turn) = snapshot;
+        let turn_plan = plan_next_interactive_turn(&plan, &hotspot, &settings, &prompt_config, &draft);
+        let speaker = plan
+            .guests
+            .iter()
+            .find(|guest| guest.id == turn_plan.speaker_id)
+            .or_else(|| plan.guests.first())
+            .ok_or_else(|| "圆桌计划没有可用 AI 嘉宾".to_string())?
+            .clone();
+        {
+            let mut sessions = interactive_sessions()
+                .lock()
+                .map_err(|_| "互动圆桌会话状态已损坏".to_string())?;
+            if let Some(session) = sessions.get_mut(&session_id) {
+                session.active_speaker_id = Some(speaker.id.clone());
+                session.status = "running".into();
+            }
+        }
+        emit_interactive_state(
+            &app,
+            &session_id,
+            "running",
+            &format!("{} 正在发言，可随时打断。", speaker.label),
+            None,
+            Some(speaker.id.clone()),
+        );
+        let outcome = stream_interactive_ai_turn(
+            &app,
+            &session_id,
+            &plan,
+            &hotspot,
+            &settings,
+            &prompt_config,
+            &draft,
+            &speaker,
+            &turn_plan,
+            cancel_current_turn,
+        )?;
+        let should_pause = matches!(outcome, StreamTextOutcome::Cancelled(_));
+        let text = match outcome {
+            StreamTextOutcome::Completed(text) | StreamTextOutcome::Cancelled(text) => text.trim().to_string(),
+        };
+        let maybe_turn = if text.is_empty() {
+            None
+        } else if should_pause {
+            Some(interrupted_ai_turn(&speaker.id, &turn_plan.intent, &text))
+        } else {
+            Some(ai_dialogue_turn(&speaker.id, &turn_plan.intent, &text))
+        };
+        let (draft, active_speaker_id, status, message) = {
+            let mut sessions = interactive_sessions()
+                .lock()
+                .map_err(|_| "互动圆桌会话状态已损坏".to_string())?;
+            let session = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| "找不到当前互动圆桌会话".to_string())?;
+            if session.status == "finished" {
+                return Ok(());
+            }
+            if let Some(turn) = maybe_turn.clone() {
+                session.draft.dialogue.push(turn);
+            }
+            session.draft.updated_at = now();
+            session.active_speaker_id = None;
+            if should_pause {
+                session.status = "awaiting_user".into();
+                (
+                    session.draft.clone(),
+                    Some(speaker.id.clone()),
+                    "awaiting_user".to_string(),
+                    "AI 发言已被打断，请输入你的观点。".to_string(),
+                )
+            } else {
+                (
+                    session.draft.clone(),
+                    None,
+                    "running".to_string(),
+                    "本轮发言已写入，继续生成下一轮。".to_string(),
+                )
+            }
+        };
+        if let Some(turn) = maybe_turn {
+            emit_draft_turn(&app, &session_id, turn);
+        }
+        emit_interactive_state(
+            &app,
+            &session_id,
+            &status,
+            &message,
+            Some(draft),
+            active_speaker_id,
+        );
+        if should_pause {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(180));
+    }
+}
+
+fn plan_next_interactive_turn(
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    settings: &Option<ProviderSettings>,
+    prompt_config: &LlmPromptConfig,
+    draft: &EpisodeDraft,
+) -> TurnPlanItem {
+    if let Some(settings) = settings {
+        if !should_use_mock_provider(settings) {
+            if let Ok(turn) = plan_next_interactive_turn_with_model(plan, hotspot, settings, prompt_config, draft) {
+                return turn;
+            }
+        }
+    }
+    fallback_next_interactive_turn(plan, hotspot, draft)
+}
+
+fn plan_next_interactive_turn_with_model(
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    settings: &ProviderSettings,
+    prompt_config: &LlmPromptConfig,
+    draft: &EpisodeDraft,
+) -> Result<TurnPlanItem, String> {
+    ensure_generation_provider_ready(settings)?;
+    let api_key = required_api_key(settings)?;
+    let model = required_selected_model(settings)?;
+    let client = Client::builder()
+        .timeout(llm_request_timeout(&settings.provider_id, 60))
+        .user_agent("ai-roundtable/0.1")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}/chat/completions", settings.base_url.trim_end_matches('/'));
+    let transcript = render_transcript(&draft.dialogue, &plan.guests);
+    let prompt = json!({
+        "hotspot": {"title": hotspot.title, "summary": hotspot.summary},
+        "objective": plan.objective,
+        "agenda": plan.agenda,
+        "tensionPoints": plan.tension_points,
+        "sourceRisks": plan.source_risks,
+        "guests": plan.guests,
+        "transcript": transcript,
+        "instruction": "选择下一位 AI 嘉宾回应当前圆桌。只能选择 host、participant、investor、expert；绝不能输出 user。若用户刚发言，优先安排最适合回应用户观点的 AI 嘉宾。"
+    });
+    let schema = JsonSchemaSpec {
+        name: "interactive_next_turn".into(),
+        strict: true,
+        schema: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["speakerId", "intent", "instruction"],
+            "properties": {
+                "speakerId": {"type": "string", "enum": ["host", "participant", "investor", "expert"]},
+                "intent": {"type": "string", "enum": ["open", "context", "intuition", "business", "technical", "challenge", "followup", "transition", "summary"]},
+                "instruction": {"type": "string"}
+            }
+        }),
+    };
+    let value = openai_chat_json(
+        &client,
+        &url,
+        &settings.provider_id,
+        None,
+        "interactive_next_turn",
+        &api_key,
+        &model,
+        "你是中文 AI 圆桌的中控 agent。只输出 JSON，不要 markdown。你只能安排 AI 嘉宾发言，用户发言只能来自真实用户输入。",
+        prompt_for_provider(&settings.provider_id, prompt.to_string(), &schema),
+        prompt_config.tasks.draft_turn_planner.temperature,
+        &schema,
+    )?;
+    let turn: TurnPlanItem = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    if is_ai_guest_speaker(&turn.speaker_id) {
+        Ok(turn)
+    } else {
+        Err("中控 agent 不能安排 user 发言".into())
+    }
+}
+
+fn fallback_next_interactive_turn(
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    draft: &EpisodeDraft,
+) -> TurnPlanItem {
+    let last_user_text = draft
+        .dialogue
+        .iter()
+        .rev()
+        .find(|turn| turn.speaker_id == "user")
+        .map(|turn| turn.text.as_str());
+    let ai_turns = draft
+        .dialogue
+        .iter()
+        .filter(|turn| turn.speaker_id != "user")
+        .count();
+    let speaker_id = if let Some(text) = last_user_text {
+        if text.contains('技') || text.contains("模型") || text.contains("工程") {
+            "expert"
+        } else if text.contains("商业") || text.contains("收入") || text.contains("投资") || text.contains("成本") {
+            "investor"
+        } else {
+            "host"
+        }
+    } else {
+        ["host", "participant", "expert", "investor"][ai_turns % 4]
+    };
+    let intent = match speaker_id {
+        "host" => {
+            if ai_turns == 0 {
+                "open"
+            } else {
+                "followup"
+            }
+        }
+        "participant" => "intuition",
+        "investor" => "business",
+        "expert" => "technical",
+        _ => "context",
+    };
+    let instruction = if let Some(text) = last_user_text {
+        format!("先回应用户刚刚的真实发言「{}」，再把讨论拉回「{}」的事实和判断。", snippet(text, 160), hotspot.title)
+    } else {
+        format!("围绕「{}」推进圆桌，回应前文并给出可核查、可编辑的中文发言。", hotspot.title)
+    };
+    let speaker_id = if plan.guests.iter().any(|guest| guest.id == speaker_id) {
+        speaker_id
+    } else {
+        plan.guests.first().map(|guest| guest.id.as_str()).unwrap_or("host")
+    };
+    TurnPlanItem {
+        speaker_id: speaker_id.into(),
+        intent: intent.into(),
+        instruction,
+    }
+}
+
+fn stream_interactive_ai_turn(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    settings: &Option<ProviderSettings>,
+    prompt_config: &LlmPromptConfig,
+    draft: &EpisodeDraft,
+    speaker: &GuestPersona,
+    turn_plan: &TurnPlanItem,
+    cancel_current_turn: Arc<AtomicBool>,
+) -> Result<StreamTextOutcome, String> {
+    if let Some(settings) = settings {
+        if !should_use_mock_provider(settings) {
+            return stream_interactive_ai_turn_with_model(
+                app,
+                session_id,
+                plan,
+                hotspot,
+                settings,
+                prompt_config,
+                draft,
+                speaker,
+                turn_plan,
+                cancel_current_turn,
+            );
+        }
+    }
+    Ok(stream_mock_interactive_ai_turn(
+        app,
+        session_id,
+        speaker,
+        turn_plan,
+        cancel_current_turn,
+    ))
+}
+
+fn stream_interactive_ai_turn_with_model(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    settings: &ProviderSettings,
+    prompt_config: &LlmPromptConfig,
+    draft: &EpisodeDraft,
+    speaker: &GuestPersona,
+    turn_plan: &TurnPlanItem,
+    cancel_current_turn: Arc<AtomicBool>,
+) -> Result<StreamTextOutcome, String> {
+    ensure_generation_provider_ready(settings)?;
+    let api_key = required_api_key(settings)?;
+    let model = required_selected_model(settings)?;
+    let client = Client::builder()
+        .timeout(llm_request_timeout(&settings.provider_id, 90))
+        .user_agent("ai-roundtable/0.1")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}/chat/completions", settings.base_url.trim_end_matches('/'));
+    let plan_json = serde_json::to_string(plan).map_err(|error| error.to_string())?;
+    let sources_json = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
+    let speaker_json = serde_json::to_string(speaker).map_err(|error| error.to_string())?;
+    let transcript = render_transcript(&draft.dialogue, &plan.guests);
+    let mut turn_replacements = style_replacements(prompt_config);
+    turn_replacements.extend([
+        ("hotspotTitle", hotspot.title.clone()),
+        ("hotspotSummary", hotspot.summary.clone()),
+        ("sourcesJson", sources_json),
+        ("planJson", plan_json),
+        ("speakerPersonaJson", speaker_json),
+        ("turnInstruction", turn_plan.instruction.clone()),
+        (
+            "transcript",
+            if transcript.is_empty() {
+                "（暂无，当前是互动圆桌开场轮）".into()
+            } else {
+                transcript
+            },
+        ),
+    ]);
+    let turn_prompt = format!(
+        "{}\n\n互动规则：用户发言只来自真实用户输入，你不能替用户补写。当前只输出「{}」这一位 AI 嘉宾的发言正文；如果上一轮有用户发言，必须自然回应。",
+        render_template(
+            &prompt_config.tasks.draft_guest_turn.user_template,
+            &turn_replacements,
+        ),
+        speaker.label
+    );
+    let stream_turn = ai_dialogue_turn(&speaker.id, &turn_plan.intent, "");
+    openai_chat_text_stream_until_cancelled(
+        &client,
+        &url,
+        &settings.provider_id,
+        None,
+        "interactive_guest_turn_stream",
+        &api_key,
+        &model,
+        "你正在扮演中文圆桌 AI 嘉宾。只输出这一轮发言正文，不要 JSON，不要 Markdown，不要字段名。",
+        turn_prompt,
+        prompt_config.tasks.draft_guest_turn.temperature,
+        |delta| emit_draft_token(app, session_id, &stream_turn, delta),
+        || cancel_current_turn.load(Ordering::SeqCst),
+    )
+}
+
+fn stream_mock_interactive_ai_turn(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    speaker: &GuestPersona,
+    turn_plan: &TurnPlanItem,
+    cancel_current_turn: Arc<AtomicBool>,
+) -> StreamTextOutcome {
+    let text = fallback_guest_turn_text(speaker, turn_plan);
+    let stream_turn = ai_dialogue_turn(&speaker.id, &turn_plan.intent, "");
+    let mut content = String::new();
+    for ch in text.chars() {
+        if cancel_current_turn.load(Ordering::SeqCst) {
+            return StreamTextOutcome::Cancelled(content);
+        }
+        let delta = ch.to_string();
+        emit_draft_token(app, session_id, &stream_turn, &delta);
+        content.push(ch);
+        thread::sleep(Duration::from_millis(24));
+    }
+    StreamTextOutcome::Completed(content)
+}
+
+fn should_use_mock_provider(settings: &ProviderSettings) -> bool {
+    settings.provider_id == "mock"
+        || settings.api_key.as_deref().unwrap_or("").trim().is_empty()
+        || settings
+            .selected_model
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+}
+
+fn emit_interactive_state(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    status: &str,
+    message: &str,
+    draft: Option<EpisodeDraft>,
+    active_speaker_id: Option<String>,
+) {
+    let _ = app.emit(
+        "roundtable://interactive-state",
+        InteractiveSessionEvent {
+            session_id: session_id.into(),
+            status: status.into(),
+            message: message.into(),
+            draft,
+            active_speaker_id,
+        },
+    );
+}
+
+#[tauri::command]
 async fn generate_autonomous_episode_draft(
     app: tauri::AppHandle,
     plan: RoundtablePlan,
@@ -1944,26 +2775,41 @@ fn generate_rule_based_draft(
                 speaker_id: "host".into(),
                 intent: "open".into(),
                 text: format!("今天我们讨论「{}」。先提醒一句，接下来的嘉宾都是模拟圆桌角色，不是真实采访对象。我们会基于来源材料，把事实、争议和判断分开。", hotspot.title),
+                source: Some("ai".into()),
+                interrupted: false,
+                created_at: Some(current_time.clone()),
             },
             DialogueTurn {
                 speaker_id: "participant".into(),
                 intent: "intuition".into(),
                 text: "从一线视角看，这类热点最值得关注的不是标题本身，而是它是否改变了团队做产品、写代码、评估模型或配置工作流的方式。".into(),
+                source: Some("ai".into()),
+                interrupted: false,
+                created_at: Some(current_time.clone()),
             },
             DialogueTurn {
                 speaker_id: "expert".into(),
                 intent: "technical".into(),
                 text: "技术上我会先看三个问题：能力是否能复现，失败模式是否清楚，工程系统是否能观测、回滚和审计。没有这些，热点容易停留在演示层。".into(),
+                source: Some("ai".into()),
+                interrupted: false,
+                created_at: Some(current_time.clone()),
             },
             DialogueTurn {
                 speaker_id: "investor".into(),
                 intent: "business".into(),
                 text: "商业上我会追问付费场景是不是足够刚性。如果只是效率叙事，还需要看到具体岗位、预算归属和竞争壁垒。".into(),
+                source: Some("ai".into()),
+                interrupted: false,
+                created_at: Some(current_time.clone()),
             },
             DialogueTurn {
                 speaker_id: "host".into(),
                 intent: "summary".into(),
                 text: format!("所以这期先给一个保守判断：它值得关注，但结论要继续回到来源和证据。当前主要来源包括：{}。", source_names),
+                source: Some("ai".into()),
+                interrupted: false,
+                created_at: Some(current_time.clone()),
             },
         ],
         takeaways: prompt_config.fallbacks.takeaways.clone(),
@@ -2259,6 +3105,9 @@ fn generate_multi_agent_draft_with_openai_compatible(
             speaker_id: turn.speaker_id.clone(),
             intent: turn.intent.clone(),
             text: String::new(),
+            source: Some("ai".into()),
+            interrupted: false,
+            created_at: Some(now()),
         };
         let turn_value_result = if let Some((app, session_id)) = stream.filter(|(_, session_id)| !session_id.is_empty()) {
             let stream_prompt = format!(
@@ -2382,6 +3231,9 @@ fn generate_multi_agent_draft_with_openai_compatible(
             speaker_id: turn.speaker_id,
             intent: turn.intent,
             text,
+            source: Some("ai".into()),
+            interrupted: false,
+            created_at: Some(now()),
         };
         if stream.filter(|(_, session_id)| !session_id.is_empty()).is_none() {
             if let Some((app, session_id)) = stream {
@@ -2468,10 +3320,17 @@ fn parse_dialogue(value: &serde_json::Value) -> Option<Vec<DialogueTurn>> {
     let turns = items
         .iter()
         .filter_map(|item| {
+            let speaker_id = item.get("speakerId")?.as_str()?.to_string();
+            if !is_ai_guest_speaker(&speaker_id) {
+                return None;
+            }
             Some(DialogueTurn {
-                speaker_id: item.get("speakerId")?.as_str()?.to_string(),
+                speaker_id,
                 intent: item.get("intent")?.as_str()?.to_string(),
                 text: item.get("text")?.as_str()?.to_string(),
+                source: Some("ai".into()),
+                interrupted: false,
+                created_at: Some(now()),
             })
         })
         .collect::<Vec<_>>();
@@ -3520,6 +4379,15 @@ fn default_tts_settings() -> TtsSettings {
     }
 }
 
+fn default_asr_settings() -> AsrSettings {
+    AsrSettings {
+        provider_id: "dashscope".into(),
+        base_url: "wss://dashscope.aliyuncs.com/api-ws/v1/inference".into(),
+        api_key: None,
+        selected_model: "paraformer-realtime-v2".into(),
+    }
+}
+
 fn default_agent_runtime_settings() -> AgentRuntimeSettings {
     AgentRuntimeSettings {
         generation_engine: "native".into(),
@@ -3614,6 +4482,33 @@ fn validate_tts_settings_shape(settings: &TtsSettings) -> Result<(), String> {
         return Err("DashScope TTS 当前仅支持 MiniMax/speech-2.8-hd 和 cosyvoice-v3.5-plus。".into());
     }
     Ok(())
+}
+
+fn validate_asr_settings_shape(settings: &AsrSettings) -> Result<(), String> {
+    if settings.provider_id != "dashscope" {
+        return Err("当前语音转文字仅支持 DashScope Paraformer。".into());
+    }
+    if settings.base_url.trim().is_empty() {
+        return Err("ASR WebSocket Base URL 为空，请先填写。".into());
+    }
+    if settings.api_key.as_deref().unwrap_or("").trim().is_empty() {
+        return Err("ASR API Key 为空，请先填写 DashScope API Key；文字打断不需要 API Key。".into());
+    }
+    if settings.selected_model.trim().is_empty() {
+        return Err("ASR 模型为空，请填写 paraformer-realtime-v2。".into());
+    }
+    Ok(())
+}
+
+fn normalize_asr_settings(mut settings: AsrSettings) -> AsrSettings {
+    settings.provider_id = "dashscope".into();
+    if settings.base_url.trim().is_empty() {
+        settings.base_url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference".into();
+    }
+    if settings.selected_model.trim().is_empty() {
+        settings.selected_model = "paraformer-realtime-v2".into();
+    }
+    settings
 }
 
 fn normalize_tts_settings(mut settings: TtsSettings) -> TtsSettings {
@@ -3817,6 +4712,10 @@ pub fn run() {
             add_manual_hotspot,
             generate_roundtable_plan,
             generate_episode_draft,
+            start_interactive_roundtable,
+            interrupt_interactive_roundtable,
+            submit_interactive_user_turn,
+            finish_interactive_roundtable,
             generate_autonomous_episode_draft,
             save_episode_draft,
             write_text_file,
@@ -3830,6 +4729,9 @@ pub fn run() {
             get_tts_settings,
             save_tts_settings,
             validate_tts_connection,
+            get_asr_settings,
+            save_asr_settings,
+            transcribe_audio_with_paraformer,
             get_agent_runtime_settings,
             save_agent_runtime_settings,
             list_episode_drafts
@@ -3855,4 +4757,92 @@ mod tests {
         let value = parse_model_json_content(raw, "draft_guest_turn").expect("should recover text");
         assert!(value["text"].as_str().unwrap().starts_with("我直接说结论"));
     }
+
+    #[test]
+    fn model_dialogue_parser_rejects_user_speaker_turns() {
+        let value = json!({
+            "dialogue": [
+                {"speakerId": "user", "intent": "challenge", "text": "这条不能来自模型。"},
+                {"speakerId": "expert", "intent": "technical", "text": "这条可以进入草稿。"}
+            ]
+        });
+
+        let dialogue = parse_dialogue(&value).expect("should keep valid AI turns");
+
+        assert_eq!(dialogue.len(), 1);
+        assert_eq!(dialogue[0].speaker_id, "expert");
+    }
+
+    #[test]
+    fn user_turn_metadata_identifies_real_user_input() {
+        let turn = user_dialogue_turn("我想补充一点：先看真实工作流。");
+
+        assert_eq!(turn.speaker_id, "user");
+        assert_eq!(turn.source.as_deref(), Some("user"));
+        assert!(!turn.interrupted);
+        assert_eq!(turn.text, "我想补充一点：先看真实工作流。");
+        assert!(turn.created_at.is_some());
+    }
+
+    #[test]
+    fn interrupted_ai_turn_preserves_partial_text_and_marks_status() {
+        let turn = interrupted_ai_turn("expert", "technical", "这里我先说一半");
+
+        assert_eq!(turn.speaker_id, "expert");
+        assert_eq!(turn.source.as_deref(), Some("ai"));
+        assert!(turn.interrupted);
+        assert_eq!(turn.text, "这里我先说一半");
+        assert!(turn.created_at.is_some());
+    }
+
+    #[test]
+    fn deepseek_plan_prompt_sanitizer_removes_false_positive_terms() {
+        let raw = "下一个杀手级AI产品，主持人可以打断，像四个真实的人聊天。";
+
+        let sanitized = sanitize_for_deepseek_plan_prompt(raw);
+
+        assert!(!sanitized.contains("杀手级"));
+        assert!(!sanitized.contains("打断"));
+        assert!(!sanitized.contains("真实的人"));
+        assert!(sanitized.contains("爆款级"));
+        assert!(sanitized.contains("插话"));
+        assert!(sanitized.contains("自然的嘉宾"));
+    }
+}
+
+fn get_or_seed_asr_settings(app: &tauri::AppHandle) -> Result<AsrSettings, String> {
+    let path = asr_settings_path(app)?;
+    if path.exists() {
+        let settings = normalize_asr_settings(read_json(path.clone())?);
+        write_json(path, &settings)?;
+        Ok(settings)
+    } else {
+        let settings = default_asr_settings();
+        write_json(path, &settings)?;
+        Ok(settings)
+    }
+}
+
+#[tauri::command]
+fn get_asr_settings(app: tauri::AppHandle) -> Result<AsrSettings, String> {
+    get_or_seed_asr_settings(&app)
+}
+
+#[tauri::command]
+fn save_asr_settings(app: tauri::AppHandle, settings: AsrSettings) -> Result<AsrSettings, String> {
+    let settings = normalize_asr_settings(settings);
+    validate_asr_settings_shape(&settings)?;
+    let path = asr_settings_path(&app)?;
+    write_json(path, &settings)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+fn transcribe_audio_with_paraformer(settings: AsrSettings, audio_base64: String) -> Result<String, String> {
+    let settings = normalize_asr_settings(settings);
+    validate_asr_settings_shape(&settings)?;
+    if audio_base64.trim().is_empty() {
+        return Err("没有收到可转写的音频。".into());
+    }
+    Err("Paraformer 实时 WebSocket 转写需要持续音频流；当前版本已保存 ASR 设置，但尚未启用后台流式转写。请先使用文字打断。".into())
 }

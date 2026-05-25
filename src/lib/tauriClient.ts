@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AgentRuntimeSettings,
+  AsrSettings,
   AutonomousDraftOptions,
   EpisodeDraft,
   FeedSource,
@@ -70,6 +71,27 @@ export function generateAutonomousEpisodeDraft(
   return invoke<EpisodeDraft>("generate_autonomous_episode_draft", { plan, hotspot, settings, options });
 }
 
+export function startInteractiveRoundtable(
+  plan: RoundtablePlan,
+  hotspot: HotspotCandidate,
+  settings: ProviderSettings | undefined,
+  sessionId: string
+) {
+  return invoke<EpisodeDraft>("start_interactive_roundtable", { plan, hotspot, settings, sessionId });
+}
+
+export function interruptInteractiveRoundtable(sessionId: string) {
+  return invoke<void>("interrupt_interactive_roundtable", { sessionId });
+}
+
+export function submitInteractiveUserTurn(sessionId: string, text: string) {
+  return invoke<EpisodeDraft>("submit_interactive_user_turn", { sessionId, text });
+}
+
+export function finishInteractiveRoundtable(sessionId: string) {
+  return invoke<EpisodeDraft>("finish_interactive_roundtable", { sessionId });
+}
+
 export function saveEpisodeDraft(draft: EpisodeDraft) {
   return invoke<string>("save_episode_draft", { draft });
 }
@@ -116,6 +138,18 @@ export function saveTtsSettings(settings: TtsSettings) {
 
 export function validateTtsConnection(settings: TtsSettings) {
   return invoke<string>("validate_tts_connection", { settings });
+}
+
+export function getAsrSettings() {
+  return invoke<AsrSettings>("get_asr_settings");
+}
+
+export function saveAsrSettings(settings: AsrSettings) {
+  return invoke<AsrSettings>("save_asr_settings", { settings });
+}
+
+export function transcribeAudioWithParaformer(settings: AsrSettings, audioBase64: string) {
+  return invoke<string>("transcribe_audio_with_paraformer", { settings, audioBase64 });
 }
 
 export function getAgentRuntimeSettings() {
