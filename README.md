@@ -21,7 +21,7 @@ Simulated roundtable guests must never be presented as real interviewed people. 
 - Desktop: Tauri v2
 - Frontend: React, TypeScript, Vite
 - Backend shell: Rust Tauri commands
-- Optional agent backend: Python FastAPI service under `agent-backend/`
+- Agent runtime: native Rust Tauri commands; archived Python experiment under `agent-backend/`
 - Storage: local JSON files in the Tauri app data directory
 - LLM: OpenAI-compatible providers, plus explicit local mock/rule generation
 - TTS: OpenAI TTS and DashScope TTS adapters
@@ -128,42 +128,13 @@ Draft generation modes:
 
 - `single`: one structured model call generates the complete draft.
 - `multi_agent`: the central agent plans turns, then each simulated guest is called separately.
-- `autonomous_agent`: optional agent runtime path for deeper stepwise generation.
+- `autonomous_agent`: native Rust autonomous path with memory retrieval, optional JSON web search, depth-controlled turn planning, and agent trace output.
 
-## Optional Python Agent Backend
+## Native Autonomous Agent
 
-The desktop app can run fully through the native Tauri/Rust generation path. The Python backend is optional and mainly used for the experimental autonomous agent mode powered by FastAPI, LangGraph, and LangChain.
+The `autonomous_agent` draft mode now runs inside Tauri/Rust. It builds local memory chunks from the hotspot, attached sources, and supplemental documents; asks the central agent to plan a depth-controlled turn sequence; runs `memory.search` for each turn; optionally calls a configured generic JSON Search API; then finalizes the standard `EpisodeDraft` with an `agentTrace`.
 
-Prerequisites:
-
-- Python 3.11+
-- `uv`
-- A real LLM provider configured in the desktop app
-
-Start the backend from the project root:
-
-```powershell
-cd agent-backend
-uv sync
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8787
-```
-
-macOS/Linux use the same commands:
-
-```bash
-cd agent-backend
-uv sync
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8787
-```
-
-Then open the desktop app and configure:
-
-- Settings -> Roundtable model -> Draft generation mode: `0.4 autonomous agent`
-- Settings -> Agent tools -> Agent engine: `Python Agent Backend (LangGraph)`
-- Settings -> Agent tools -> Python Agent Endpoint: `http://127.0.0.1:8787`
-- Save Agent tool settings before generating the draft.
-
-The Rust side first calls `POST /v1/generate/events` for streamed progress. If streaming fails, it falls back to `POST /v1/generate`. Both endpoints return the same canonical `EpisodeDraft` shape used by the desktop app.
+The former Python FastAPI/LangGraph backend under `agent-backend/` is kept only as an experimental archive and is no longer a product runtime dependency or a visible settings option.
 
 ## TTS And MP3 Export
 
@@ -239,7 +210,7 @@ Use `npm.cmd run tauri:dev` for desktop integration testing. Tauri `invoke(...)`
 - Tauri build cannot find Rust/Cargo: add `%USERPROFILE%\.cargo\bin` to the current shell `PATH`.
 - Windows package build fails with C++ toolchain errors: install Visual Studio Build Tools with `Microsoft.VisualStudio.Workload.VCTools`.
 - Real LLM generation fails: check provider, Base URL, API Key, selected model, and model permission.
-- Python agent generation fails: confirm `uvicorn` is running on `127.0.0.1:8787`, the endpoint in Settings matches it, and the draft mode is `0.4 autonomous agent`.
+- Autonomous agent generation fails: check the model provider, Base URL, API Key, selected model, Search API settings, and supplemental document content. If no Search API is configured, external search is skipped automatically.
 - TTS returns empty audio or HTTP 400: confirm the TTS model is activated and that the configured voice ID is valid for that model.
 - UI settings seem stale: check the app data directory; runtime settings are read from local JSON there.
 
@@ -248,7 +219,7 @@ Use `npm.cmd run tauri:dev` for desktop integration testing. Tauri `invoke(...)`
 ```text
 src/                         React frontend
 src-tauri/                   Tauri Rust backend and packaging config
-agent-backend/               Optional Python agent backend
+agent-backend/               Experimental archive of the old Python agent backend
 config/prompts/              Bundled prompt, persona, schema, and fallback config
 docs/                        Product, technical, UX, packaging, and workflow docs
 dev_readme.md                Developer commands and release workflow

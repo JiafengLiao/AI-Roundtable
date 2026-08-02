@@ -54,6 +54,8 @@ export type GuestPersona = {
 export type RoundtablePlan = {
   id: string;
   hotspotId: string;
+  topicTitle?: string;
+  topicSummary?: string;
   objective: string;
   audiencePromise: string;
   guests: GuestPersona[];
@@ -119,7 +121,7 @@ export type ModelProvider = {
 
 export type DraftGenerationMode = "single" | "multi_agent" | "autonomous_agent";
 export type DiscussionDepth = "low" | "medium" | "high";
-export type AgentGenerationEngine = "native" | "python_remote";
+export type AgentGenerationEngine = "native";
 
 export type ProviderSettings = {
   providerId: string;

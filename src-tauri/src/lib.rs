@@ -124,6 +124,10 @@ struct RoundtablePlan {
     id: String,
     #[serde(rename = "hotspotId")]
     hotspot_id: String,
+    #[serde(rename = "topicTitle", skip_serializing_if = "Option::is_none")]
+    topic_title: Option<String>,
+    #[serde(rename = "topicSummary", skip_serializing_if = "Option::is_none")]
+    topic_summary: Option<String>,
     objective: String,
     #[serde(rename = "audiencePromise")]
     audience_promise: String,
@@ -447,6 +451,8 @@ struct TurnPlanItem {
     speaker_id: String,
     intent: String,
     instruction: String,
+    #[serde(rename = "toolQueries", default)]
+    tool_queries: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -560,6 +566,14 @@ struct AgentProgressEvent {
     severity: String,
     #[serde(rename = "turnIndex", skip_serializing_if = "Option::is_none")]
     turn_index: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct AutonomousMemoryChunk {
+    id: String,
+    title: String,
+    text: String,
+    source: Option<Source>,
 }
 
 fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -897,9 +911,11 @@ fn parse_bundled_json<T: DeserializeOwned>(name: &str, content: &str) -> Result<
         .map_err(|error| format!("invalid bundled prompt file {name}: {error}"))
 }
 
+const PROMPT_CONFIG_VERSION: u16 = 5;
+
 fn bundled_prompt_config() -> Result<LlmPromptConfig, String> {
     Ok(LlmPromptConfig {
-        version: Some(4),
+        version: Some(PROMPT_CONFIG_VERSION),
         personas: parse_bundled_json(
             "personas.json",
             include_str!("../../config/prompts/personas.json"),
@@ -956,7 +972,9 @@ fn get_or_seed_prompt_config(app: Option<&tauri::AppHandle>) -> Result<LlmPrompt
         let path = prompt_config_path(app)?;
         if path.exists() {
             match read_json::<LlmPromptConfig>(path.clone()) {
-                Ok(config) if config.version.unwrap_or_default() >= 4 => Ok(config),
+                Ok(config) if config.version.unwrap_or_default() >= PROMPT_CONFIG_VERSION => {
+                    Ok(config)
+                }
                 _ => {
                     let config = bundled_prompt_config()?;
                     write_json(path, &config)?;
@@ -1785,7 +1803,7 @@ fn generate_roundtable_plan(
     let log_dir = llm_logs_dir(&app)?;
     if let Some(settings) = settings {
         if settings.provider_id == "mock" {
-            return Ok(generate_rule_based_plan(hotspot, &prompt_config));
+            return Err("圆桌议程的主题和摘要必须由真实模型生成，请先在设置中选择可用模型并配置 API Key。".into());
         }
 
         ensure_generation_provider_ready(&settings)?;
@@ -1803,7 +1821,7 @@ fn generate_roundtable_plan(
         .map_err(|error| format!("LLM 生成计划失败，已停止本地 fallback：{error}"));
     }
 
-    Ok(generate_rule_based_plan(hotspot, &prompt_config))
+    Err("圆桌议程的主题和摘要必须由真实模型生成，请先在设置中选择可用模型并配置 API Key。".into())
 }
 
 fn emit_draft_token(app: &tauri::AppHandle, session_id: &str, turn: &DialogueTurn, text_delta: &str) {
@@ -1884,10 +1902,11 @@ fn generate_rule_based_plan(
     } else {
         hotspot.matched_signals.join("、")
     };
-
     RoundtablePlan {
         id: stable_id("plan", &hotspot.id),
         hotspot_id: hotspot.id,
+        topic_title: None,
+        topic_summary: None,
         objective: format!(
             "围绕「{}」建立事实背景、行业直觉、商业判断和技术判断。",
             hotspot.title
@@ -1974,6 +1993,12 @@ fn generate_plan_with_openai_compatible(
         &prompt_config.schemas.plan,
     )?;
     let mut plan = generate_rule_based_plan(hotspot.clone(), prompt_config);
+    if let Some(topic_title) = value.get("topicTitle").and_then(|item| item.as_str()) {
+        plan.topic_title = Some(topic_title.to_string());
+    }
+    if let Some(topic_summary) = value.get("topicSummary").and_then(|item| item.as_str()) {
+        plan.topic_summary = Some(topic_summary.to_string());
+    }
     if let Some(objective) = value.get("objective").and_then(|item| item.as_str()) {
         plan.objective = objective.to_string();
     }
@@ -1989,7 +2014,26 @@ fn generate_plan_with_openai_compatible(
     if let Some(source_risks) = string_array(&value, "sourceRisks") {
         plan.source_risks = source_risks;
     }
-    Ok(plan)
+    require_model_topic_metadata(plan)
+}
+
+fn require_model_topic_metadata(plan: RoundtablePlan) -> Result<RoundtablePlan, String> {
+    let has_title = plan
+        .topic_title
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let has_summary = plan
+        .topic_summary
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+
+    if has_title && has_summary {
+        Ok(plan)
+    } else {
+        Err("模型未返回圆桌议程主题和摘要，已停止生成。请重试或更换真实模型。".into())
+    }
 }
 
 fn string_array(value: &serde_json::Value, key: &str) -> Option<Vec<String>> {
@@ -2567,6 +2611,7 @@ fn fallback_next_interactive_turn(
     TurnPlanItem {
         speaker_id: speaker_id.into(),
         intent: intent.into(),
+        tool_queries: vec![hotspot.title.clone(), instruction.clone()],
         instruction,
     }
 }
@@ -2735,14 +2780,307 @@ async fn generate_autonomous_episode_draft(
     hotspot: HotspotCandidate,
     settings: ProviderSettings,
     options: AutonomousDraftOptions,
+    agent_runtime_settings: AgentRuntimeSettings,
 ) -> Result<EpisodeDraft, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut settings = settings;
-        settings.draft_generation_mode = Some("multi_agent".into());
-        generate_episode_draft_impl(app, plan, hotspot, Some(settings), Some(options.session_id))
+        generate_autonomous_episode_draft_native(
+            &app,
+            &plan,
+            &hotspot,
+            &settings,
+            &options,
+            &agent_runtime_settings,
+        )
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn generate_autonomous_episode_draft_native(
+    app: &tauri::AppHandle,
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    settings: &ProviderSettings,
+    options: &AutonomousDraftOptions,
+    runtime_settings: &AgentRuntimeSettings,
+) -> Result<EpisodeDraft, String> {
+    let prompt_config = get_or_seed_prompt_config(Some(app))?;
+    let log_dir = llm_logs_dir(app)?;
+    let depth = if options.discussion_depth.trim().is_empty() {
+        runtime_settings.discussion_depth.as_str()
+    } else {
+        options.discussion_depth.as_str()
+    };
+    let (min_turns, max_turns) = autonomous_turn_range(depth);
+    let session_id = options.session_id.trim();
+    let memory_chunks = build_autonomous_memory_chunks(hotspot, &options.supplemental_documents);
+    let mut sources = hotspot.sources.clone();
+    let mut agent_trace = vec![agent_trace_record(
+        stable_id("trace", &format!("{}{}autonomous-memory", plan.id, hotspot.id)),
+        "info",
+        "controller",
+        "中控 Agent",
+        "memory.index",
+        format!(
+            "已建立 {} 个本地记忆片段，包含热点、来源和 {} 份补充资料。",
+            memory_chunks.len(),
+            options.supplemental_documents.iter().filter(|doc| !doc.content.trim().is_empty()).count()
+        ),
+        hotspot.sources.clone(),
+    )];
+    if !runtime_settings.generation_engine.trim().is_empty()
+        && runtime_settings.generation_engine.trim() != "native"
+    {
+        agent_trace.push(agent_trace_record(
+            stable_id("trace", &format!("{}{}engine-native", plan.id, hotspot.id)),
+            "warning",
+            "controller",
+            "中控 Agent",
+            "runtime.engine",
+            "Python Remote 已归档，本次强自治圆桌使用 Native Rust Runtime 执行。",
+            Vec::new(),
+        ));
+    }
+    if !session_id.is_empty() {
+        emit_agent_progress(
+            app,
+            session_id,
+            "controller",
+            "中控 Agent",
+            "建立记忆索引",
+            "running",
+            8,
+            "正在整理热点、来源和补充资料，建立本地记忆片段",
+            "info",
+            None,
+        );
+    }
+
+    let turn_plan = if should_use_mock_provider(settings) {
+        fallback_autonomous_turn_plan(plan, hotspot, min_turns, &prompt_config)
+    } else {
+        ensure_generation_provider_ready(settings)?;
+        let api_key = required_api_key(settings)?;
+        let model = required_selected_model(settings)?;
+        generate_autonomous_turn_plan_with_model(
+            plan,
+            hotspot,
+            settings,
+            Some(log_dir.as_path()),
+            &api_key,
+            &model,
+            &prompt_config,
+            min_turns,
+            max_turns,
+            &memory_chunks,
+            runtime_settings,
+            app,
+            session_id,
+            &mut agent_trace,
+        )?
+    };
+    let planned_turn_count = turn_plan.turns.len().clamp(min_turns, max_turns).max(1);
+    agent_trace.push(agent_trace_record(
+        stable_id("trace", &format!("{}{}autonomous-plan", plan.id, hotspot.id)),
+        "info",
+        "controller",
+        "中控 Agent",
+        "planning",
+        format!(
+            "讨论深度为 {}，中控规划 {} 轮发言（目标范围 {}-{}）。",
+            depth, planned_turn_count, min_turns, max_turns
+        ),
+        hotspot.sources.clone(),
+    ));
+    if !session_id.is_empty() {
+        emit_agent_progress(
+            app,
+            session_id,
+            "controller",
+            "中控 Agent",
+            "调度完成",
+            "succeeded",
+            22,
+            "中控已完成强自治调度，开始逐轮检索和发言",
+            "info",
+            None,
+        );
+    }
+
+    let client = Client::builder()
+        .timeout(llm_request_timeout(&settings.provider_id, 90))
+        .user_agent("ai-roundtable/0.4 native-autonomous")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}/chat/completions", settings.base_url.trim_end_matches('/'));
+    let api_key = if should_use_mock_provider(settings) {
+        String::new()
+    } else {
+        required_api_key(settings)?
+    };
+    let model = if should_use_mock_provider(settings) {
+        String::new()
+    } else {
+        required_selected_model(settings)?
+    };
+    let plan_json = serde_json::to_string(plan).map_err(|error| error.to_string())?;
+    let mut dialogue = Vec::new();
+
+    for (index, turn) in turn_plan.turns.into_iter().take(max_turns).enumerate() {
+        let speaker = plan
+            .guests
+            .iter()
+            .find(|guest| guest.id == turn.speaker_id)
+            .or_else(|| plan.guests.first())
+            .ok_or_else(|| "圆桌计划没有可用嘉宾".to_string())?;
+        let progress = 24 + ((index as f32 / planned_turn_count as f32) * 68.0).round() as u8;
+        if !session_id.is_empty() {
+            emit_agent_progress(
+                app,
+                session_id,
+                &speaker.id,
+                &speaker.label,
+                "检索资料",
+                "running",
+                progress,
+                "正在执行 memory.search，并按配置尝试 web.search",
+                "info",
+                Some(index + 1),
+            );
+        }
+        let queries = autonomous_turn_queries(&turn, hotspot);
+        let mut memory_hits = Vec::new();
+        let mut web_sources = Vec::new();
+        for query in queries.iter().take(2) {
+            memory_hits.extend(autonomous_memory_search(&memory_chunks, query, 3));
+            match autonomous_web_search(runtime_settings, query, Some(&client)) {
+                Ok(results) => web_sources.extend(results),
+                Err(error) => agent_trace.push(agent_trace_record(
+                    stable_id("trace", &format!("{}{}{}web-error", plan.id, hotspot.id, index + 1)),
+                    "warning",
+                    &speaker.id,
+                    &speaker.label,
+                    "web.search",
+                    format!("搜索失败，已跳过外部来源：{error}"),
+                    Vec::new(),
+                )),
+            }
+        }
+        sources = merge_sources_by_url(sources, web_sources.clone());
+        let memory_sources = memory_hits
+            .iter()
+            .filter_map(|chunk| chunk.source.clone())
+            .collect::<Vec<_>>();
+        let retrieval_sources = merge_sources_by_url(memory_sources, web_sources.clone());
+        agent_trace.push(agent_trace_record(
+            stable_id("trace", &format!("{}{}{}retrieval", plan.id, hotspot.id, index + 1)),
+            if retrieval_sources.is_empty() { "debug" } else { "info" },
+            &speaker.id,
+            &speaker.label,
+            "retrieval",
+            format!(
+                "第 {} 轮检索命中 {} 个记忆片段、{} 个外部来源。查询：{}",
+                index + 1,
+                memory_hits.len(),
+                web_sources.len(),
+                queries.join(" / ")
+            ),
+            retrieval_sources,
+        ));
+
+        let text = if should_use_mock_provider(settings) {
+            fallback_autonomous_guest_text(hotspot, speaker, &turn, &memory_hits)
+        } else {
+            generate_autonomous_guest_turn_with_model(
+                &client,
+                &url,
+                &settings.provider_id,
+                Some(log_dir.as_path()),
+                &api_key,
+                &model,
+                &prompt_config,
+                plan,
+                hotspot,
+                &plan_json,
+                speaker,
+                &turn,
+                &dialogue,
+                &memory_hits,
+                &web_sources,
+                app,
+                session_id,
+                index + 1,
+                &mut agent_trace,
+            )?
+        };
+        let dialogue_turn = DialogueTurn {
+            speaker_id: speaker.id.clone(),
+            intent: turn.intent,
+            text,
+            source: Some("ai".into()),
+            interrupted: false,
+            created_at: Some(now()),
+        };
+        if should_use_mock_provider(settings) && !session_id.is_empty() {
+            emit_draft_turn(app, session_id, dialogue_turn.clone());
+        }
+        dialogue.push(dialogue_turn);
+        if !session_id.is_empty() {
+            emit_agent_progress(
+                app,
+                session_id,
+                &speaker.id,
+                &speaker.label,
+                "发言完成",
+                "succeeded",
+                progress.saturating_add(6),
+                "本轮发言已写入圆桌稿",
+                "info",
+                Some(index + 1),
+            );
+        }
+    }
+
+    let current_time = now();
+    let mut draft = generate_rule_based_draft(plan.clone(), hotspot.clone(), &prompt_config);
+    draft.title = turn_plan.title;
+    draft.summary = turn_plan.summary;
+    draft.sources = sources;
+    draft.dialogue = dialogue;
+    draft.takeaways = turn_plan.takeaways;
+    draft.fact_checks = turn_plan.fact_checks;
+    draft.created_at = current_time.clone();
+    draft.updated_at = current_time;
+    agent_trace.push(agent_trace_record(
+        stable_id("trace", &format!("{}{}autonomous-final", plan.id, hotspot.id)),
+        "info",
+        "controller",
+        "中控 Agent",
+        "finalize",
+        format!(
+            "强自治圆桌已完成，最终保留 {} 个来源、{} 条发言和 {} 条事实核查提示。",
+            draft.sources.len(),
+            draft.dialogue.len(),
+            draft.fact_checks.len()
+        ),
+        draft.sources.clone(),
+    ));
+    draft.agent_trace = filter_autonomous_trace(agent_trace, runtime_settings.debug_trace_enabled);
+    if !session_id.is_empty() {
+        emit_agent_progress(
+            app,
+            session_id,
+            "controller",
+            "中控 Agent",
+            "完成",
+            "succeeded",
+            100,
+            "强自治圆桌稿已生成",
+            "info",
+            None,
+        );
+    }
+    Ok(draft)
 }
 
 fn generate_rule_based_draft(
@@ -2757,13 +3095,23 @@ fn generate_rule_based_draft(
         .map(|source| source.publisher.clone())
         .collect::<Vec<_>>()
         .join("、");
+    let topic_title = plan
+        .topic_title
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| hotspot.title.clone());
+    let topic_summary = plan
+        .topic_summary
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| hotspot.summary.clone());
 
     EpisodeDraft {
         id: stable_id("draft", &format!("{}{}", plan.id, hotspot.id)),
-        title: format!("圆桌：{}", hotspot.title),
+        title: format!("圆桌：{}", topic_title),
         summary: format!(
             "{} 本期基于 {} 个来源展开，重点讨论事实背景、工程可行性、商业影响和本周行动判断。",
-            hotspot.summary, hotspot.source_count
+            topic_summary, hotspot.source_count
         ),
         status: "draft".into(),
         plan_id: plan.id,
@@ -2774,7 +3122,7 @@ fn generate_rule_based_draft(
             DialogueTurn {
                 speaker_id: "host".into(),
                 intent: "open".into(),
-                text: format!("今天我们讨论「{}」。先提醒一句，接下来的嘉宾都是模拟圆桌角色，不是真实采访对象。我们会基于来源材料，把事实、争议和判断分开。", hotspot.title),
+                text: format!("今天我们讨论「{}」。先提醒一句，接下来的嘉宾都是模拟圆桌角色，不是真实采访对象。我们会基于来源材料，把事实、争议和判断分开。", topic_title),
                 source: Some("ai".into()),
                 interrupted: false,
                 created_at: Some(current_time.clone()),
@@ -2782,7 +3130,7 @@ fn generate_rule_based_draft(
             DialogueTurn {
                 speaker_id: "participant".into(),
                 intent: "intuition".into(),
-                text: "从一线视角看，这类热点最值得关注的不是标题本身，而是它是否改变了团队做产品、写代码、评估模型或配置工作流的方式。".into(),
+                text: "作为产品使用者，我最关心的不是标题本身，而是它是否真的改变日常工作流、降低试用门槛，并且值得持续付费。".into(),
                 source: Some("ai".into()),
                 interrupted: false,
                 created_at: Some(current_time.clone()),
@@ -3290,6 +3638,586 @@ fn generate_multi_agent_draft_with_openai_compatible(
     ));
     draft.agent_trace = agent_trace;
     Ok(draft)
+}
+
+fn autonomous_turn_range(depth: &str) -> (usize, usize) {
+    match depth {
+        "low" => (8, 10),
+        "high" => (12, 16),
+        _ => (10, 14),
+    }
+}
+
+fn build_autonomous_memory_chunks(
+    hotspot: &HotspotCandidate,
+    supplemental_documents: &[SupplementalDocument],
+) -> Vec<AutonomousMemoryChunk> {
+    let mut chunks = vec![AutonomousMemoryChunk {
+        id: format!("hotspot:{}", hotspot.id),
+        title: hotspot.title.clone(),
+        text: format!(
+            "{}\n{}\n{}",
+            hotspot.title,
+            hotspot.summary,
+            hotspot.note.clone().unwrap_or_default()
+        ),
+        source: None,
+    }];
+    chunks.extend(hotspot.sources.iter().map(|source| AutonomousMemoryChunk {
+        id: format!("source:{}", source.id),
+        title: source.title.clone(),
+        text: format!(
+            "{}\n{}\n{}\n{}",
+            source.title,
+            source.publisher,
+            source.url,
+            source.published_at.clone().unwrap_or_default()
+        ),
+        source: Some(source.clone()),
+    }));
+    for document in supplemental_documents {
+        let text = document.content.trim();
+        if text.is_empty() {
+            continue;
+        }
+        for (index, chunk) in chunk_autonomous_text(text, 1400, 180).into_iter().enumerate() {
+            chunks.push(AutonomousMemoryChunk {
+                id: format!("document:{}:{}", document.id, index),
+                title: document.name.clone(),
+                text: format!("{}\n路径：{}\n{}", document.name, document.path, chunk),
+                source: None,
+            });
+        }
+    }
+    chunks
+}
+
+fn chunk_autonomous_text(value: &str, max_chars: usize, overlap: usize) -> Vec<String> {
+    let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= max_chars {
+        return vec![text];
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let end = (start + max_chars).min(chars.len());
+        chunks.push(chars[start..end].iter().collect::<String>());
+        if end == chars.len() {
+            break;
+        }
+        start = end.saturating_sub(overlap);
+    }
+    chunks
+}
+
+fn autonomous_memory_search(
+    chunks: &[AutonomousMemoryChunk],
+    query: &str,
+    limit: usize,
+) -> Vec<AutonomousMemoryChunk> {
+    let terms = query
+        .replace(['/', '|', '，', '。', '、', '：'], " ")
+        .split_whitespace()
+        .map(|term| term.trim().to_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return chunks.iter().take(limit).cloned().collect();
+    }
+    let mut scored = chunks
+        .iter()
+        .filter_map(|chunk| {
+            let haystack = format!("{}\n{}", chunk.title, chunk.text).to_lowercase();
+            let score = terms
+                .iter()
+                .map(|term| haystack.matches(term).count())
+                .sum::<usize>();
+            (score > 0).then(|| (score, chunk.clone()))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    scored
+        .into_iter()
+        .map(|(_, chunk)| chunk)
+        .take(limit)
+        .collect()
+}
+
+fn autonomous_web_search(
+    settings: &AgentRuntimeSettings,
+    query: &str,
+    client: Option<&Client>,
+) -> Result<Vec<Source>, String> {
+    let base_url = settings.search_base_url.trim();
+    if base_url.is_empty() {
+        return Ok(Vec::new());
+    }
+    let local_client;
+    let client = match client {
+        Some(client) => client,
+        None => {
+            local_client = Client::builder()
+                .timeout(Duration::from_secs(30))
+                .user_agent("ai-roundtable/0.4 native-autonomous-search")
+                .build()
+                .map_err(|error| error.to_string())?;
+            &local_client
+        }
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static("application/json"));
+    if let Some(api_key) = settings.search_api_key.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        let value = HeaderValue::from_str(&format!("Bearer {api_key}"))
+            .map_err(|error| format!("Search API Key 不是有效 header：{error}"))?;
+        headers.insert("Authorization", value);
+    }
+    let body = json!({
+        "query": query,
+        "maxResults": settings.search_max_results.clamp(1, 10),
+        "language": settings.search_language,
+        "recencyDays": settings.search_recency_days,
+    });
+    let response = client
+        .post(base_url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let value: serde_json::Value = response.json().map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("HTTP {status}: {value}"));
+    }
+    let raw_results = value
+        .get("results")
+        .and_then(|results| results.as_array())
+        .or_else(|| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut sources = Vec::new();
+    for (index, item) in raw_results
+        .into_iter()
+        .take(settings.search_max_results.clamp(1, 10))
+        .enumerate()
+    {
+        let title = item
+            .get("title")
+            .or_else(|| item.get("name"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        let url = item
+            .get("url")
+            .or_else(|| item.get("link"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        let publisher = item
+            .get("source")
+            .or_else(|| item.get("publisher"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("Web Search")
+            .trim();
+        sources.push(Source {
+            id: stable_id("web", &format!("{url}-{index}")),
+            title: title.into(),
+            url: url.into(),
+            publisher: if publisher.is_empty() { "Web Search".into() } else { publisher.into() },
+            published_at: item
+                .get("publishedAt")
+                .or_else(|| item.get("published_at"))
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+        });
+    }
+    Ok(sources)
+}
+
+fn filter_autonomous_trace(
+    trace: Vec<AgentTraceRecord>,
+    include_debug: bool,
+) -> Vec<AgentTraceRecord> {
+    if include_debug {
+        trace
+    } else {
+        trace
+            .into_iter()
+            .filter(|record| record.level != "debug")
+            .collect()
+    }
+}
+
+fn merge_sources_by_url(mut existing: Vec<Source>, extra: Vec<Source>) -> Vec<Source> {
+    let mut seen = existing
+        .iter()
+        .map(|source| source.url.clone())
+        .collect::<Vec<_>>();
+    for source in extra {
+        if !seen.iter().any(|url| url == &source.url) {
+            seen.push(source.url.clone());
+            existing.push(source);
+        }
+    }
+    existing
+}
+
+fn autonomous_turn_queries(turn: &TurnPlanItem, hotspot: &HotspotCandidate) -> Vec<String> {
+    let mut queries = turn
+        .tool_queries
+        .iter()
+        .map(|query| query.trim().to_string())
+        .filter(|query| !query.is_empty())
+        .collect::<Vec<_>>();
+    if queries.is_empty() {
+        queries.push(hotspot.title.clone());
+        if !turn.instruction.trim().is_empty() {
+            queries.push(turn.instruction.clone());
+        }
+    }
+    queries
+}
+
+fn fallback_autonomous_turn_plan(
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    min_turns: usize,
+    prompt_config: &LlmPromptConfig,
+) -> TurnPlanResponse {
+    let intents = [
+        "open",
+        "context",
+        "intuition",
+        "business",
+        "technical",
+        "challenge",
+        "followup",
+        "transition",
+        "summary",
+    ];
+    let turns = (0..min_turns)
+        .map(|index| {
+            let guest = plan
+                .guests
+                .get(index % plan.guests.len().max(1))
+                .map(|guest| guest.id.clone())
+                .unwrap_or_else(|| "host".into());
+            let agenda = plan
+                .agenda
+                .get(index % plan.agenda.len().max(1))
+                .cloned()
+                .unwrap_or_else(|| hotspot.title.clone());
+            TurnPlanItem {
+                speaker_id: guest,
+                intent: intents[index % intents.len()].into(),
+                instruction: format!(
+                    "围绕「{}」推进讨论，优先使用 memory.search 检索补充资料，并保守区分事实与判断：{}",
+                    hotspot.title, agenda
+                ),
+                tool_queries: vec![hotspot.title.clone(), agenda],
+            }
+        })
+        .collect();
+    TurnPlanResponse {
+        title: format!("圆桌：{}", plan.topic_title.clone().unwrap_or_else(|| hotspot.title.clone())),
+        summary: plan
+            .topic_summary
+            .clone()
+            .unwrap_or_else(|| hotspot.summary.clone()),
+        turns,
+        takeaways: prompt_config.fallbacks.takeaways.clone(),
+        fact_checks: prompt_config.fallbacks.fact_checks.clone(),
+    }
+}
+
+fn generate_autonomous_turn_plan_with_model(
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    settings: &ProviderSettings,
+    log_dir: Option<&Path>,
+    api_key: &str,
+    model: &str,
+    prompt_config: &LlmPromptConfig,
+    min_turns: usize,
+    max_turns: usize,
+    memory_chunks: &[AutonomousMemoryChunk],
+    runtime_settings: &AgentRuntimeSettings,
+    app: &tauri::AppHandle,
+    session_id: &str,
+    agent_trace: &mut Vec<AgentTraceRecord>,
+) -> Result<TurnPlanResponse, String> {
+    if !session_id.is_empty() {
+        emit_agent_progress(
+            app,
+            session_id,
+            "controller",
+            "中控 Agent",
+            "规划调度",
+            "running",
+            16,
+            "正在按讨论深度规划发言轮次和工具查询",
+            "info",
+            None,
+        );
+    }
+    let client = Client::builder()
+        .timeout(llm_request_timeout(&settings.provider_id, 90))
+        .user_agent("ai-roundtable/0.4 native-autonomous")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}/chat/completions", settings.base_url.trim_end_matches('/'));
+    let plan_json = serde_json::to_string(plan).map_err(|error| error.to_string())?;
+    let sources_json = serde_json::to_string(&hotspot.sources).map_err(|error| error.to_string())?;
+    let guests_json = serde_json::to_string(&plan.guests).map_err(|error| error.to_string())?;
+    let memory_summary = memory_chunks
+        .iter()
+        .take(8)
+        .map(|chunk| format!("{}: {}", chunk.title, truncate_chars(&chunk.text, 260)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let supplemental_names = if memory_summary.is_empty() {
+        "无".into()
+    } else {
+        memory_summary
+    };
+    let mut planner_replacements = style_replacements(prompt_config);
+    planner_replacements.extend([
+        ("hotspotTitle", hotspot.title.clone()),
+        ("hotspotSummary", hotspot.summary.clone()),
+        ("planJson", plan_json),
+        ("sourcesJson", sources_json),
+        ("guestPersonasJson", guests_json),
+    ]);
+    let user_prompt = format!(
+        "{}\n\n调用方补充要求：discussionDepth={}，turns 必须在 {} 到 {} 轮之间。每个 turn 必须包含 toolQueries 字符串数组，优先写 memory.search 查询词；仅当 Search API 已配置且确需最新外部材料时再写 web.search 查询方向。\n\n可检索记忆摘要：\n{}\n\nSearch API：{}，语言：{}，最多 {} 条，近 {} 天。",
+        render_template(
+            &prompt_config.tasks.draft_turn_planner.user_template,
+            &planner_replacements,
+        ),
+        runtime_settings.discussion_depth,
+        min_turns,
+        max_turns,
+        supplemental_names,
+        if runtime_settings.search_base_url.trim().is_empty() { "未配置，规划中不要依赖外部搜索" } else { "已配置，可按需使用" },
+        runtime_settings.search_language,
+        runtime_settings.search_max_results.clamp(1, 10),
+        runtime_settings
+            .search_recency_days
+            .map(|days| days.to_string())
+            .unwrap_or_else(|| "不限".into())
+    );
+    let planner_prompt = prompt_for_provider(&settings.provider_id, user_prompt, &prompt_config.schemas.turn_plan);
+    let value = openai_chat_json(
+        &client,
+        &url,
+        &settings.provider_id,
+        log_dir,
+        "autonomous_turn_planner",
+        api_key,
+        model,
+        &prompt_config.tasks.draft_turn_planner.system_prompt,
+        planner_prompt,
+        prompt_config.tasks.draft_turn_planner.temperature,
+        &prompt_config.schemas.turn_plan,
+    )?;
+    let mut turn_plan: TurnPlanResponse =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
+    if turn_plan.turns.len() < min_turns {
+        agent_trace.push(agent_trace_record(
+            stable_id("trace", &format!("{}{}autonomous-plan-fallback", plan.id, hotspot.id)),
+            "warning",
+            "controller",
+            "中控 Agent",
+            "planning.fallback",
+            format!("模型规划少于 {} 轮，已使用本地强自治兜底计划。", min_turns),
+            hotspot.sources.clone(),
+        ));
+        return Ok(fallback_autonomous_turn_plan(plan, hotspot, min_turns, prompt_config));
+    }
+    turn_plan.turns.truncate(max_turns);
+    Ok(turn_plan)
+}
+
+fn generate_autonomous_guest_turn_with_model(
+    client: &Client,
+    url: &str,
+    provider_id: &str,
+    log_dir: Option<&Path>,
+    api_key: &str,
+    model: &str,
+    prompt_config: &LlmPromptConfig,
+    plan: &RoundtablePlan,
+    hotspot: &HotspotCandidate,
+    plan_json: &str,
+    speaker: &GuestPersona,
+    turn: &TurnPlanItem,
+    dialogue: &[DialogueTurn],
+    memory_hits: &[AutonomousMemoryChunk],
+    web_sources: &[Source],
+    app: &tauri::AppHandle,
+    session_id: &str,
+    turn_index: usize,
+    agent_trace: &mut Vec<AgentTraceRecord>,
+) -> Result<String, String> {
+    let speaker_json = serde_json::to_string(speaker).map_err(|error| error.to_string())?;
+    let sources = merge_sources_by_url(
+        hotspot.sources.clone(),
+        web_sources.to_vec(),
+    );
+    let sources_json = serde_json::to_string(&sources).map_err(|error| error.to_string())?;
+    let transcript = render_transcript(dialogue, &plan.guests);
+    let tool_context = json!({
+        "toolQueries": turn.tool_queries,
+        "memoryHits": memory_hits.iter().take(4).map(|chunk| json!({
+            "id": chunk.id,
+            "title": chunk.title,
+            "text": truncate_chars(&chunk.text, 800),
+        })).collect::<Vec<_>>(),
+        "webSources": web_sources.iter().take(4).collect::<Vec<_>>(),
+    });
+    let mut turn_replacements = style_replacements(prompt_config);
+    turn_replacements.extend([
+        ("hotspotTitle", hotspot.title.clone()),
+        ("hotspotSummary", hotspot.summary.clone()),
+        ("sourcesJson", sources_json),
+        ("planJson", plan_json.to_string()),
+        ("speakerPersonaJson", speaker_json),
+        (
+            "turnInstruction",
+            format!(
+                "{}\n\n后端工具结果：{}",
+                turn.instruction,
+                serde_json::to_string(&tool_context).unwrap_or_default()
+            ),
+        ),
+        (
+            "transcript",
+            if transcript.is_empty() {
+                "（暂无，当前是开场轮）".into()
+            } else {
+                transcript
+            },
+        ),
+    ]);
+    let prompt = prompt_for_provider(
+        provider_id,
+        render_template(
+            &prompt_config.tasks.draft_guest_turn.user_template,
+            &turn_replacements,
+        ),
+        &prompt_config.schemas.guest_turn,
+    );
+    let stream_turn = DialogueTurn {
+        speaker_id: speaker.id.clone(),
+        intent: turn.intent.clone(),
+        text: String::new(),
+        source: Some("ai".into()),
+        interrupted: false,
+        created_at: Some(now()),
+    };
+    let result = if !session_id.is_empty() {
+        let stream_prompt = format!(
+            "{}\n\n重要：本次是流式输出，请只输出当前嘉宾这一轮发言正文。不要 JSON，不要 Markdown，不要输出 text 字段名。",
+            prompt
+        );
+        openai_chat_text_stream(
+            client,
+            url,
+            provider_id,
+            log_dir,
+            "autonomous_guest_turn_stream",
+            api_key,
+            model,
+            "你正在扮演中文圆桌嘉宾。只输出这一轮发言正文，不要 JSON，不要 Markdown，不要字段名。",
+            stream_prompt,
+            prompt_config.tasks.draft_guest_turn.temperature,
+            |delta| emit_draft_token(app, session_id, &stream_turn, delta),
+        )
+    } else {
+        openai_chat_json(
+            client,
+            url,
+            provider_id,
+            log_dir,
+            "autonomous_guest_turn",
+            api_key,
+            model,
+            &prompt_config.tasks.draft_guest_turn.system_prompt,
+            prompt,
+            prompt_config.tasks.draft_guest_turn.temperature,
+            &prompt_config.schemas.guest_turn,
+        )
+        .and_then(|value| {
+            serde_json::from_value::<GuestTurnResponse>(value)
+                .map_err(|error| error.to_string())
+                .map(|turn| turn.text)
+        })
+    };
+    match result.map(|text| text.trim().to_string()) {
+        Ok(text) if !text.is_empty() => Ok(text),
+        Ok(_) => {
+            let fallback = fallback_autonomous_guest_text(hotspot, speaker, turn, memory_hits);
+            if !session_id.is_empty() {
+                emit_draft_token(app, session_id, &stream_turn, &fallback);
+            }
+            agent_trace.push(agent_trace_record(
+                stable_id("trace", &format!("{}{}{}autonomous-empty", plan.id, hotspot.id, turn_index)),
+                "warning",
+                &speaker.id,
+                &speaker.label,
+                "guest.fallback",
+                "模型返回空发言，已使用本地兜底文本继续生成。",
+                web_sources.to_vec(),
+            ));
+            Ok(fallback)
+        }
+        Err(error) => {
+            let fallback = fallback_autonomous_guest_text(hotspot, speaker, turn, memory_hits);
+            if !session_id.is_empty() {
+                emit_draft_token(app, session_id, &stream_turn, &fallback);
+            }
+            agent_trace.push(agent_trace_record(
+                stable_id("trace", &format!("{}{}{}autonomous-error", plan.id, hotspot.id, turn_index)),
+                "warning",
+                &speaker.id,
+                &speaker.label,
+                "guest.fallback",
+                format!("模型发言生成失败，已使用本地兜底文本：{error}"),
+                web_sources.to_vec(),
+            ));
+            Ok(fallback)
+        }
+    }
+}
+
+fn fallback_autonomous_guest_text(
+    hotspot: &HotspotCandidate,
+    speaker: &GuestPersona,
+    turn: &TurnPlanItem,
+    memory_hits: &[AutonomousMemoryChunk],
+) -> String {
+    let memory_hint = memory_hits
+        .first()
+        .map(|chunk| format!("我会把补充材料里的「{}」也纳入判断，", truncate_chars(&chunk.title, 36)))
+        .unwrap_or_default();
+    format!(
+        "{}我先按「{}」的视角给一个保守判断：{} 这一轮要推进的是：{} 但所有结论都应该回到来源、补充资料和可复核证据上，不把热度直接当成落地。",
+        memory_hint,
+        speaker.label,
+        hotspot.summary,
+        turn.instruction
+    )
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value.to_string()
+    } else {
+        format!("{}...", value.chars().take(max_chars).collect::<String>())
+    }
 }
 
 fn fallback_guest_turn_text(speaker: &GuestPersona, turn: &TurnPlanItem) -> String {
@@ -4402,14 +5330,31 @@ fn default_agent_runtime_settings() -> AgentRuntimeSettings {
     }
 }
 
+fn normalize_agent_runtime_settings(mut settings: AgentRuntimeSettings) -> AgentRuntimeSettings {
+    settings.generation_engine = "native".into();
+    if settings.python_agent_base_url.trim().is_empty() {
+        settings.python_agent_base_url = "http://127.0.0.1:8787".into();
+    }
+    if !matches!(settings.discussion_depth.as_str(), "low" | "medium" | "high") {
+        settings.discussion_depth = "medium".into();
+    }
+    settings.search_base_url = settings.search_base_url.trim().to_string();
+    settings.search_language = settings.search_language.trim().to_string();
+    if settings.search_language.is_empty() {
+        settings.search_language = "zh-CN".into();
+    }
+    settings.search_max_results = settings.search_max_results.clamp(1, 10);
+    settings
+}
+
 #[tauri::command]
 fn get_agent_runtime_settings(_app: tauri::AppHandle) -> Result<AgentRuntimeSettings, String> {
-    Ok(default_agent_runtime_settings())
+    Ok(normalize_agent_runtime_settings(default_agent_runtime_settings()))
 }
 
 #[tauri::command]
 fn save_agent_runtime_settings(settings: AgentRuntimeSettings) -> Result<AgentRuntimeSettings, String> {
-    Ok(settings)
+    Ok(normalize_agent_runtime_settings(settings))
 }
 
 fn seed_tts_settings_from_roundtable(_app: &tauri::AppHandle) -> Result<TtsSettings, String> {
@@ -4796,6 +5741,90 @@ mod tests {
     }
 
     #[test]
+    fn rule_based_plan_leaves_topic_metadata_empty_for_model_generation() {
+        let prompt_config = bundled_prompt_config().expect("bundled config should parse");
+        let hotspot = HotspotCandidate {
+            id: "merged-1".into(),
+            title: "多源圆桌：国产 Coding 争霸赛 / Claude Sonnet 5 agent 降价 / Copilot benchmark".into(),
+            summary: "第一篇 RSS 摘要。\n\n第二篇 RSS 摘要。".into(),
+            category: "developer".into(),
+            score: 90,
+            status: "shortlisted".into(),
+            source_count: 3,
+            sources: vec![
+                Source {
+                    id: "source-1".into(),
+                    title: "国产 Coding 争霸赛".into(),
+                    url: "https://example.com/a".into(),
+                    publisher: "雷峰网".into(),
+                    published_at: Some("2026-07-01".into()),
+                },
+                Source {
+                    id: "source-2".into(),
+                    title: "Claude Sonnet 5 agent 降价".into(),
+                    url: "https://example.com/b".into(),
+                    publisher: "Anthropic".into(),
+                    published_at: Some("2026-07-01".into()),
+                },
+            ],
+            matched_signals: vec!["coding".into(), "agent".into()],
+            created_at: "2026-07-01T00:00:00.000Z".into(),
+            note: Some("由 3 个候选源合并生成".into()),
+        };
+
+        let plan = generate_rule_based_plan(hotspot, &prompt_config);
+
+        assert!(plan.topic_title.is_none());
+        assert!(plan.topic_summary.is_none());
+    }
+
+    #[test]
+    fn plan_without_model_topic_metadata_is_rejected() {
+        let prompt_config = bundled_prompt_config().expect("bundled config should parse");
+        let hotspot = HotspotCandidate {
+            id: "hotspot-1".into(),
+            title: "RSS 原始标题".into(),
+            summary: "RSS 原始摘要".into(),
+            category: "developer".into(),
+            score: 90,
+            status: "shortlisted".into(),
+            source_count: 1,
+            sources: vec![],
+            matched_signals: vec!["agent".into()],
+            created_at: "2026-07-01T00:00:00.000Z".into(),
+            note: None,
+        };
+        let plan = generate_rule_based_plan(hotspot, &prompt_config);
+
+        let error = require_model_topic_metadata(plan).expect_err("missing model metadata should fail");
+
+        assert!(error.contains("模型"));
+        assert!(error.contains("主题"));
+        assert!(error.contains("摘要"));
+    }
+
+    #[test]
+    fn prompt_config_version_refreshes_topic_metadata_schema_changes() {
+        let prompt_config = bundled_prompt_config().expect("bundled config should parse");
+
+        assert!(prompt_config.version.unwrap_or_default() >= 5);
+    }
+
+    #[test]
+    fn plan_schema_avoids_provider_unsupported_length_keywords() {
+        let prompt_config = bundled_prompt_config().expect("bundled config should parse");
+        let topic_summary = prompt_config
+            .schemas
+            .plan
+            .schema
+            .get("properties")
+            .and_then(|properties| properties.get("topicSummary"))
+            .expect("topicSummary schema should exist");
+
+        assert!(topic_summary.get("maxLength").is_none());
+    }
+
+    #[test]
     fn deepseek_plan_prompt_sanitizer_removes_false_positive_terms() {
         let raw = "下一个杀手级AI产品，主持人可以打断，像四个真实的人聊天。";
 
@@ -4807,6 +5836,71 @@ mod tests {
         assert!(sanitized.contains("爆款级"));
         assert!(sanitized.contains("插话"));
         assert!(sanitized.contains("自然的嘉宾"));
+    }
+
+    #[test]
+    fn autonomous_depth_sets_expected_turn_ranges() {
+        assert_eq!(autonomous_turn_range("low"), (8, 10));
+        assert_eq!(autonomous_turn_range("medium"), (10, 14));
+        assert_eq!(autonomous_turn_range("high"), (12, 16));
+        assert_eq!(autonomous_turn_range("unknown"), (10, 14));
+    }
+
+    #[test]
+    fn autonomous_memory_indexes_supplemental_documents() {
+        let hotspot = HotspotCandidate {
+            id: "hotspot-memory".into(),
+            title: "Agent 记忆测试".into(),
+            summary: "摘要里没有私有补充材料。".into(),
+            category: "developer".into(),
+            score: 88,
+            status: "shortlisted".into(),
+            source_count: 1,
+            sources: vec![Source {
+                id: "source-memory".into(),
+                title: "公开来源".into(),
+                url: "https://example.com/source".into(),
+                publisher: "Example".into(),
+                published_at: None,
+            }],
+            matched_signals: vec!["agent".into()],
+            created_at: "2026-07-01T00:00:00.000Z".into(),
+            note: None,
+        };
+        let docs = vec![SupplementalDocument {
+            id: "doc-private".into(),
+            name: "内部补充.md".into(),
+            path: "notes/internal.md".into(),
+            content: "这份补充材料提到专属线索：memory-sentinel。".into(),
+        }];
+
+        let chunks = build_autonomous_memory_chunks(&hotspot, &docs);
+        let hits = autonomous_memory_search(&chunks, "memory-sentinel", 3);
+
+        assert!(hits.iter().any(|chunk| chunk.id.starts_with("document:doc-private")));
+    }
+
+    #[test]
+    fn autonomous_search_skips_when_base_url_is_empty() {
+        let settings = default_agent_runtime_settings();
+
+        let result = autonomous_web_search(&settings, "latest ai", None).expect("empty search config should not fail");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn autonomous_trace_filter_hides_debug_by_default() {
+        let records = vec![
+            agent_trace_record("trace-info", "info", "controller", "中控 Agent", "planning", "info", Vec::new()),
+            agent_trace_record("trace-debug", "debug", "controller", "中控 Agent", "memory.search", "debug", Vec::new()),
+        ];
+
+        let filtered = filter_autonomous_trace(records.clone(), false);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].level, "info");
+        assert_eq!(filter_autonomous_trace(records, true).len(), 2);
     }
 }
 

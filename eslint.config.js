@@ -5,7 +5,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 
 export default [
   {
-    ignores: ["dist", "src-tauri/target", "src-tauri/gen"]
+    ignores: ["dist", "node_modules", "agent-backend/.venv", "src-tauri/target", "src-tauri/gen"]
   },
   js.configs.recommended,
   {
@@ -31,7 +31,10 @@ export default [
         console: "readonly",
         Blob: "readonly",
         document: "readonly",
+        FileReader: "readonly",
         HTMLElement: "readonly",
+        MediaRecorder: "readonly",
+        navigator: "readonly",
         performance: "readonly",
         window: "readonly"
       }

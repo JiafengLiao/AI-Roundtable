@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ElementRef, type ReactNode } from "react";
 import { defaultWindowIcon } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -7,22 +7,41 @@ import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import {
   Activity,
+  ArrowRight,
+  BarChart2,
+  BookOpen,
   Bot,
-  BrainCircuit,
   CalendarDays,
+  Check,
   CheckCircle2,
+  ChevronRight,
+  Clock,
+  Cpu,
+  DollarSign,
   Download,
-  FileEdit,
+  Eye,
+  Flame,
   FileText,
+  Layers,
+  LineChart,
   Mic,
   PenLine,
+  Pause,
   Plus,
+  PlusSquare,
   Radio,
   RefreshCcw,
   Rss,
   Save,
+  Search,
   Settings,
-  Sparkles
+  Shield,
+  Sparkles,
+  Terminal,
+  TrendingUp,
+  Users,
+  X,
+  Zap
 } from "lucide-react";
 import {
   addManualHotspot,
@@ -59,6 +78,10 @@ import {
   writeTextFile
 } from "./lib/tauriClient";
 import type { ManualAttachmentImportResult, ManualHotspotInput } from "./lib/tauriClient";
+import { addDays, normalizeDateRange, type ChangedDateBoundary } from "./lib/dateRange";
+import { getCategoryGenerationSelection, getPostFetchSelectionState } from "./lib/workflowSelection";
+import { inferHotspotDisplayCategory, type HotspotDisplayCategoryKey } from "./lib/hotspotClassification";
+import { getPlanTopicDisplay } from "./lib/roundtablePlan";
 import type {
   AgentProgressEvent,
   AgentRuntimeSettings,
@@ -78,6 +101,8 @@ import type {
   SupplementalDocument,
   TtsSettings
 } from "./types";
+
+void saveAsrSettings;
 
 const RSS_PRESETS: FeedSource[] = [
   { id: "openai-blog", name: "OpenAI Blog", url: "https://openai.com/news/rss.xml", category: "company", enabled: true, lastStatus: "idle" },
@@ -100,15 +125,18 @@ const RSS_PRESETS: FeedSource[] = [
   { id: "the-decoder", name: "The Decoder", url: "https://the-decoder.com/feed/", category: "market", enabled: true, lastStatus: "idle" }
 ];
 
-const navItems = [
-  { id: "workbench", label: "工作台", icon: Activity },
+const productNavItems = [
+  { id: "workbench", label: "首页", icon: CalendarDays },
   { id: "feeds", label: "RSS 源", icon: Rss },
-  { id: "manual", label: "手动补充", icon: Plus },
-  { id: "plan", label: "圆桌议程", icon: BrainCircuit },
-  { id: "draft", label: "圆桌稿", icon: FileEdit },
-  { id: "history", label: "圆桌历史", icon: CheckCircle2 },
+  { id: "hotspots", label: "热点库", icon: Flame },
+  { id: "manual", label: "手动补充", icon: PlusSquare },
+  { id: "plan", label: "圆桌议程", icon: Users },
+  { id: "draft", label: "圆桌稿", icon: FileText },
+  { id: "history", label: "历史", icon: Clock },
   { id: "settings", label: "设置", icon: Settings }
-];
+] as const;
+
+type AppView = (typeof productNavItems)[number]["id"];
 
 const DEFAULT_PROVIDER_ID = "deepseek";
 const DEFAULT_TTS_SETTINGS: TtsSettings = {
@@ -158,7 +186,7 @@ const TTS_PROVIDER_OPTIONS: Array<{
 ];
 
 function App() {
-  const [activeView, setActiveView] = useState("workbench");
+  const [activeView, setActiveView] = useState<AppView>("workbench");
   const [feeds, setFeeds] = useState<FeedSource[]>([]);
   const [hotspots, setHotspots] = useState<HotspotCandidate[]>([]);
   const [selectedHotspot, setSelectedHotspot] = useState<HotspotCandidate | null>(null);
@@ -206,8 +234,8 @@ function App() {
     [hotspots, selectedHotspotIds]
   );
   const generationHotspot = useMemo(
-    () => mergeHotspots(selectedHotspots.length > 0 ? selectedHotspots : selectedHotspot ? [selectedHotspot] : []),
-    [selectedHotspot, selectedHotspots]
+    () => mergeHotspots(selectedHotspots),
+    [selectedHotspots]
   );
   const filteredHotspots = useMemo(() => filterHotspots(hotspots, filters), [hotspots, filters]);
   const availableTags = useMemo(() => Array.from(new Set(hotspots.flatMap((hotspot) => hotspot.matchedSignals))).sort(), [hotspots]);
@@ -400,12 +428,13 @@ function App() {
       const result = await searchHotspots();
       setHotspots(result);
       const nextFiltered = filterHotspots(result, filters);
-      setSelectedHotspot(nextFiltered[0] ?? result[0] ?? null);
-      setSelectedHotspotIds((nextFiltered[0] ?? result[0]) ? [(nextFiltered[0] ?? result[0]).id] : []);
+      const nextSelection = getPostFetchSelectionState(result, nextFiltered);
+      setSelectedHotspot(nextSelection.focusedHotspot);
+      setSelectedHotspotIds(nextSelection.selectedHotspotIds);
       setRoundtablePlan(null);
       setEpisodeDraft(null);
       setJob({ id: "job-fetch", type: "fetch", status: "succeeded", message: `后端抓取完成，发现 ${result.length} 个候选热点` });
-      setActiveView("workbench");
+      setActiveView("hotspots");
       await loadFeeds();
     } catch (error) {
       setJob({ id: "job-fetch", type: "fetch", status: "failed", message: formatError(error, "RSS 抓取失败") });
@@ -420,8 +449,9 @@ function App() {
     setJob({ id: "job-week", type: "fetch", status: "succeeded", message: "已设置为本周时间范围，可继续筛选候选热点" });
   }
 
-  function updateDateRange(startDate: string, endDate: string) {
-    setFilters((current) => ({ ...current, startDate, endDate }));
+  function updateDateRange(startDate: string, endDate: string, changed: ChangedDateBoundary = "endDate") {
+    const normalized = normalizeDateRange({ startDate, endDate }, changed);
+    setFilters((current) => ({ ...current, ...normalized }));
     setJob({ id: "job-date-range", type: "fetch", status: "succeeded", message: "日期范围已更新，可继续抓取或筛选热点" });
   }
 
@@ -591,10 +621,7 @@ function App() {
             phase: "启动运行时",
             status: "running",
             progress: 4,
-            message:
-              agentRuntimeSettings.generationEngine === "python_remote"
-                ? "正在连接 Python Agent Backend"
-                : "正在启动强自治圆桌运行时",
+            message: "正在启动 Native Rust 强自治圆桌运行时",
             severity: "info"
           }
         });
@@ -603,7 +630,7 @@ function App() {
           sessionId,
           discussionDepth,
           supplementalDocuments
-        });
+        }, agentRuntimeSettings);
       } else {
         setAgentProgress(
           settings.draftGenerationMode === "multi_agent"
@@ -781,6 +808,22 @@ function App() {
     });
   }
 
+  function updatePlanTopicTitle(value: string) {
+    if (!roundtablePlan) return;
+    setRoundtablePlan({
+      ...roundtablePlan,
+      topicTitle: value
+    });
+  }
+
+  function updatePlanTopicSummary(value: string) {
+    if (!roundtablePlan) return;
+    setRoundtablePlan({
+      ...roundtablePlan,
+      topicSummary: value
+    });
+  }
+
   async function refreshModelsFromProvider(settings: ProviderSettings) {
     try {
       setJob({ id: "job-models", type: "fetch", status: "running", message: "正在向模型厂商抓取模型列表" });
@@ -878,6 +921,46 @@ function App() {
     );
   }
 
+  function selectCategoryForGeneration(articles: ZipArticle[]) {
+    const nextSelection = getCategoryGenerationSelection(articles);
+    setSelectedHotspot(nextSelection.focusedHotspot);
+    setSelectedHotspotIds(nextSelection.selectedHotspotIds);
+  }
+
+  async function generatePlanFromCategory(articles: ZipArticle[]) {
+    const nextSelection = getCategoryGenerationSelection(articles);
+    setSelectedHotspot(nextSelection.focusedHotspot);
+    setSelectedHotspotIds(nextSelection.selectedHotspotIds);
+
+    const selectedIdSet = new Set(nextSelection.selectedHotspotIds);
+    const categoryHotspots = articles.flatMap((article) =>
+      article.hotspot && selectedIdSet.has(article.hotspot.id) ? [article.hotspot] : []
+    );
+    const categoryHotspot = mergeHotspots(categoryHotspots);
+    if (!categoryHotspot) {
+      setJob({ id: "job-plan-category", type: "plan", status: "failed", message: "No articles in this category can be used for roundtable generation." });
+      return;
+    }
+
+    try {
+      const settings = currentProviderSettings();
+      const connected = await ensureLlmConnected(settings, "Category roundtable generation model connection failed");
+      if (!connected) return;
+      const startedAt = performance.now();
+      setJob({ id: "job-plan", type: "plan", status: "running", message: "Generating roundtable agenda from this category" });
+      const plan = await generateRoundtablePlan(categoryHotspot, settings);
+      const elapsed = Math.round(performance.now() - startedAt);
+      console.info(`[AI timing] generate_roundtable_plan ${elapsed}ms`);
+      setRoundtablePlan(plan);
+      setEpisodeDraft(null);
+      setJob({ id: "job-plan", type: "plan", status: "succeeded", message: `Category roundtable agenda generated in ${elapsed}ms` });
+      setActiveView("plan");
+    } catch (error) {
+      setJob({ id: "job-plan", type: "plan", status: "failed", message: formatError(error, "Category roundtable generation failed") });
+      showLlmSettingsPrompt(error, "Category roundtable generation failed. Check model connection and settings.");
+    }
+  }
+
   function openHistoryDraft(draft: EpisodeDraft) {
     setSelectedHistoryDraft(draft);
   }
@@ -939,23 +1022,203 @@ function App() {
     };
   }
 
+  void lastSavedPath;
+  void interactiveStatus;
+  void isVoiceTranscribing;
+  void selectedHistoryDraft;
+  void availableTags;
+  void availableSources;
+  void setCurrentWeekRange;
+  void updateDateRange;
+  void clearFilters;
+  void addSupplementalDocument;
+  void interruptInteractiveDraft;
+  void finishInteractiveDraft;
+  void transcribeVoiceInterjection;
+  void saveDraft;
+  void refreshModelsFromProvider;
+  void saveTtsAudioSettings;
+  void openHistoryDraft;
+  void updateHistoryDraft;
+  void returnToHistoryList;
+
+  async function exportCurrentDraft(format: "md" | "html" | "pdf" | "mp3") {
+    if (!episodeDraft) {
+      setJob({ id: "job-export", type: "save", status: "failed", message: "当前没有可导出的圆桌稿" });
+      return;
+    }
+    try {
+      setJob({ id: "job-export", type: "save", status: "running", message: `正在导出 ${format.toUpperCase()}` });
+      const path = await saveDraftAs(episodeDraft, format);
+      setJob({
+        id: "job-export",
+        type: "save",
+        status: path ? "succeeded" : "idle",
+        message: path ? `已导出：${path}` : "已取消导出"
+      });
+    } catch (error) {
+      setJob({ id: "job-export", type: "save", status: "failed", message: formatError(error, "导出失败") });
+    }
+  }
+
+  async function saveAsrAudioSettings(settings: AsrSettings) {
+    try {
+      setJob({ id: "job-asr-save", type: "save", status: "running", message: "正在保存 ASR 设置" });
+      const saved = await saveAsrSettings(settings);
+      setAsrSettings(saved);
+      setJob({ id: "job-asr-save", type: "save", status: "succeeded", message: "ASR 设置已保存" });
+    } catch (error) {
+      setJob({ id: "job-asr-save", type: "save", status: "failed", message: formatError(error, "保存 ASR 设置失败") });
+    }
+  }
+
+  async function openCurrentDraftSource() {
+    const source = episodeDraft?.sources[0] ?? generationHotspot?.sources[0] ?? selectedHotspot?.sources[0];
+    if (!source?.url) {
+      setJob({ id: "job-open-source", type: "fetch", status: "failed", message: "当前没有可打开的来源" });
+      return;
+    }
+    await openSource(source.url);
+  }
+
+  function setDraftStatus(status: EpisodeDraft["status"]) {
+    if (!episodeDraft) {
+      setJob({ id: "job-draft-status", type: "save", status: "failed", message: "当前没有可切换状态的草稿" });
+      return;
+    }
+    setEpisodeDraft({ ...episodeDraft, status, updatedAt: new Date().toISOString() });
+    setJob({ id: "job-draft-status", type: "save", status: "succeeded", message: `草稿状态已切换为：${statusLabel(status)}` });
+  }
+
+  async function testSettingsPanel(panel: "model" | "agent" | "tts" | "asr") {
+    try {
+      if (panel === "model") {
+        await ensureLlmConnected(currentProviderSettings(), "模型连接测试失败");
+        return;
+      }
+      if (panel === "tts") {
+        setJob({ id: "job-tts-check", type: "fetch", status: "running", message: "正在测试 TTS 连接" });
+        const message = await validateTtsConnection(ttsSettings);
+        setJob({ id: "job-tts-check", type: "fetch", status: "succeeded", message });
+        return;
+      }
+      setJob({
+        id: `job-${panel}-check`,
+        type: "fetch",
+        status: "succeeded",
+        message: panel === "agent" ? "Agent 运行时配置已读取" : "ASR 配置已读取，请在圆桌稿页用语音输入做端到端测试"
+      });
+    } catch (error) {
+      setJob({ id: `job-${panel}-check`, type: "fetch", status: "failed", message: formatError(error, "连接测试失败") });
+    }
+  }
+
   const showBlockingProgress = job.status === "running" && job.type !== "draft";
+  const zipPage = (
+    <ZipProductPage
+      activeView={activeView}
+      agentRuntimeSettings={agentRuntimeSettings}
+      appDataDir={appDataDir}
+      asrSettings={asrSettings}
+      draft={episodeDraft}
+      draftGenerationMode={draftGenerationMode}
+      feeds={feeds}
+      filters={filters}
+      historyDrafts={historyDrafts}
+      hotspots={filteredHotspots}
+      interactiveSessionId={interactiveSessionId}
+      interactiveStatus={interactiveStatus}
+      job={job}
+      modelCatalog={modelCatalog}
+      onAddFeed={addFeed}
+      onDateRangeChange={updateDateRange}
+      onDraftGenerationModeChange={setDraftGenerationMode}
+      onGenerateDraft={generateDraft}
+      onGeneratePlan={generatePlan}
+      onFinishInteractive={finishInteractiveDraft}
+      onHistoryRefresh={loadHistory}
+      onImportAttachment={async () => {
+        const selected = await openDialog({
+          multiple: false,
+          filters: [
+            { name: "Documents", extensions: ["pdf", "md", "txt", "html"] },
+            { name: "All files", extensions: ["*"] }
+          ]
+        });
+        if (typeof selected !== "string") return null;
+        return importManualAttachmentFile(selected);
+      }}
+      onManualSubmit={handleManualAdd}
+      onModelChange={setSelectedModel}
+      onNavigate={setActiveView}
+      onOpenDraftSource={openCurrentDraftSource}
+      onOpenSource={openFirstHotspotSource}
+      onInterruptInteractive={interruptInteractiveDraft}
+      onProviderChange={(providerId) => {
+        setSelectedProviderId(providerId);
+        const provider = modelCatalog.find((item) => item.id === providerId);
+        const saved = providerSettings.find((item) => item.providerId === providerId);
+        setSelectedModel(provider?.models[0] ?? "");
+        setDraftGenerationMode(saved?.draftGenerationMode ?? "single");
+      }}
+      onRefreshFeeds={loadFeeds}
+      onRefreshFromProvider={refreshModelsFromProvider}
+      onRefreshModels={refreshModelCatalog}
+      onRunFetch={runFetch}
+      onSaveAgentSettings={saveAgentSettings}
+      onSaveAsrSettings={saveAsrAudioSettings}
+      onSaveDraft={saveDraft}
+      onSaveSettings={saveSettings}
+      onSaveTtsSettings={saveTtsAudioSettings}
+      onSelectHotspot={setSelectedHotspot}
+      onSetDraftStatus={setDraftStatus}
+      onStartInteractiveDraft={startInteractiveDraft}
+      onSubmitUserTurn={() => submitInteractiveText(userInterjectionText)}
+      onExportDraft={exportCurrentDraft}
+      onTestSettingsPanel={testSettingsPanel}
+      onToggleFeed={toggleFeed}
+      onToggleHotspotSelection={toggleHotspotSelection}
+      onUpdatePlanAgenda={updatePlanAgenda}
+      onUpdatePlanTension={updatePlanTension}
+      onUpdatePlanTopicSummary={updatePlanTopicSummary}
+      onUpdatePlanTopicTitle={updatePlanTopicTitle}
+      onSelectCategoryForGeneration={selectCategoryForGeneration}
+      onGenerateCategoryPlan={generatePlanFromCategory}
+      providerSettings={providerSettings}
+      roundtablePlan={roundtablePlan}
+      selectedHotspot={generationHotspot ?? selectedHotspot}
+      selectedHotspotIds={selectedHotspotIds}
+      selectedModel={selectedModel}
+      selectedProviderId={selectedProviderId}
+      ttsSettings={ttsSettings}
+      userInterjectionText={userInterjectionText}
+      onUserInterjectionTextChange={setUserInterjectionText}
+    />
+  );
 
   return (
     <main className="shell">
       <aside className="sidebar">
         <div className="brand">
           <div className="brandMark">
-            <Radio size={20} />
+            <svg aria-hidden="true" width="26" height="26" viewBox="0 0 26 26" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="11" y="1" width="4" height="3" rx="1.5" fill="currentColor" opacity="0.9" />
+              <rect x="11" y="22" width="4" height="3" rx="1.5" fill="currentColor" opacity="0.9" />
+              <rect x="1" y="11" width="3" height="4" rx="1.5" fill="currentColor" opacity="0.9" />
+              <rect x="22" y="11" width="3" height="4" rx="1.5" fill="currentColor" opacity="0.9" />
+              <circle cx="13" cy="13" r="7" fill="currentColor" opacity="0.22" />
+              <circle cx="13" cy="13" r="7" stroke="currentColor" strokeWidth="2" opacity="0.95" />
+              <circle cx="13" cy="13" r="1.6" fill="currentColor" opacity="0.8" />
+            </svg>
           </div>
           <div>
             <strong>AI小圆桌</strong>
-            <span>本地圆桌工作台</span>
+            <span>Weekly AI Studio</span>
           </div>
         </div>
 
         <nav className="nav" aria-label="主导航">
-          {navItems.map((item) => {
+          {productNavItems.map((item) => {
             const Icon = item.icon;
             return (
               <button
@@ -977,152 +1240,9 @@ function App() {
         </div>
       </aside>
 
-      <section className="mainPanel">
-        {activeView === "workbench" && (
-          <>
-            <header className="topbar">
-              <div>
-                <p className="eyebrow">Windows 本地内容生产工具</p>
-                <h1>每周 AI 热点圆桌工作台</h1>
-              </div>
-            </header>
-
-            <section className="statusStrip" aria-live="polite">
-              <StatusPill label="后端状态" value={job.message} tone={job.status === "failed" ? "danger" : job.status === "running" ? "warning" : "success"} />
-              <StatusPill label="RSS 源" value={`${feeds.length} 个`} tone="neutral" />
-              <StatusPill label="候选热点" value={`${hotspots.length} 条`} tone="neutral" />
-              <StatusPill label="草稿状态" value={episodeDraft?.status ?? "未生成"} tone="warning" />
-            </section>
-
-            <section className="fetchControlBand">
-              <DateRangeControl
-                endDate={filters.endDate}
-                onSetCurrentWeek={setCurrentWeekRange}
-                onUpdate={updateDateRange}
-                startDate={filters.startDate}
-              />
-              <span className="dateRangeText">{formatDateCn(filters.startDate)} - {formatDateCn(filters.endDate)}</span>
-              <button className="primaryButton" disabled={job.status === "running"} onClick={runFetch} type="button">
-                <RefreshCcw size={16} />
-                {job.status === "running" && job.type === "fetch" ? "抓取中" : "抓取 RSS"}
-              </button>
-            </section>
-          </>
-        )}
-
-        <div className="workspace fullWorkspace">
-          <section className="contentPane">
-            {activeView === "workbench" && (
-              <Workbench
-                hotspots={filteredHotspots}
-                availableSources={availableSources}
-                availableTags={availableTags}
-                filters={filters}
-                onClearFilters={clearFilters}
-                onFiltersChange={setFilters}
-                totalHotspots={hotspots.length}
-                selectedHotspotIds={selectedHotspotIds}
-                onGeneratePlan={generatePlan}
-                onSelectHotspot={setSelectedHotspot}
-                onToggleHotspotSelection={toggleHotspotSelection}
-                onOpenSource={openFirstHotspotSource}
-                onFetch={runFetch}
-              />
-            )}
-            {activeView === "feeds" && <Feeds feeds={feeds} onAddFeed={addFeed} onRefresh={loadFeeds} onToggleFeed={toggleFeed} />}
-            {activeView === "manual" && <ManualInput onImportAttachment={importManualAttachmentFile} onSubmit={handleManualAdd} />}
-            {activeView === "plan" && (
-              <PlanView
-                discussionDepth={discussionDepth}
-                onGenerateDraft={generateDraft}
-                onStartInteractiveDraft={startInteractiveDraft}
-                onGeneratePlan={generatePlan}
-                onDiscussionDepthChange={setDiscussionDepth}
-                onAddSupplementalDocument={addSupplementalDocument}
-                onClearSupplementalDocuments={() => setSupplementalDocuments([])}
-                onUpdateAgenda={updatePlanAgenda}
-                onUpdateTension={updatePlanTension}
-                plan={roundtablePlan}
-                supplementalDocuments={supplementalDocuments}
-              />
-            )}
-            {activeView === "draft" && (
-              <DraftEditor
-                agentProgress={agentProgress}
-                asrSettings={asrSettings}
-                draft={episodeDraft}
-                interactiveSessionId={interactiveSessionId}
-                interactiveStatus={interactiveStatus}
-                isGenerating={job.status === "running" && job.type === "draft"}
-                isVoiceTranscribing={isVoiceTranscribing}
-                job={job}
-                lastSavedPath={lastSavedPath}
-                onFinishInteractive={finishInteractiveDraft}
-                onInterruptInteractive={interruptInteractiveDraft}
-                onSaveDraft={saveDraft}
-                onSubmitUserTurn={submitInteractiveText}
-                onTranscribeVoice={transcribeVoiceInterjection}
-                userInterjectionText={userInterjectionText}
-                onUserInterjectionTextChange={setUserInterjectionText}
-              />
-            )}
-            {activeView === "history" && (
-              <HistoryView
-                drafts={historyDrafts}
-                onRefresh={loadHistory}
-                onOpenSource={openSource}
-                onSelectDraft={openHistoryDraft}
-                onBackToList={returnToHistoryList}
-                onUpdateDraft={updateHistoryDraft}
-                selectedDraft={selectedHistoryDraft}
-              />
-            )}
-            {activeView === "settings" && (
-              <SettingsView
-                agentRuntimeSettings={agentRuntimeSettings}
-                appDataDir={appDataDir}
-                asrSettings={asrSettings}
-                modelCatalog={modelCatalog}
-                onModelChange={setSelectedModel}
-                onProviderChange={(providerId) => {
-                  setSelectedProviderId(providerId);
-                  const provider = modelCatalog.find((item) => item.id === providerId);
-                  const saved = providerSettings.find((item) => item.providerId === providerId);
-                  setSelectedModel(provider?.models[0] ?? "");
-                  setDraftGenerationMode(saved?.draftGenerationMode ?? "single");
-                }}
-                draftGenerationMode={draftGenerationMode}
-                onDraftGenerationModeChange={setDraftGenerationMode}
-                onRefreshFromProvider={refreshModelsFromProvider}
-                onRefreshModels={refreshModelCatalog}
-                onSaveAgentSettings={saveAgentSettings}
-                onSaveAsrSettings={async (settings) => {
-                  try {
-                    setJob({ id: "job-asr-save", type: "save", status: "running", message: "正在保存 ASR 设置" });
-                    const saved = await saveAsrSettings(settings);
-                    setAsrSettings(saved);
-                    setJob({ id: "job-asr-save", type: "save", status: "succeeded", message: "ASR 设置已保存" });
-                  } catch (error) {
-                    setJob({ id: "job-asr-save", type: "save", status: "failed", message: formatError(error, "保存 ASR 设置失败") });
-                  }
-                }}
-                onSaveSettings={saveSettings}
-                onSaveTtsSettings={saveTtsAudioSettings}
-                providerSettings={providerSettings}
-                selectedModel={selectedModel}
-                selectedProviderId={selectedProviderId}
-                ttsSettings={ttsSettings}
-              />
-            )}
-          </section>
-
-        </div>
+      <section className="mainPanel zipMain">
+        {zipPage}
       </section>
-      <footer className="appFooter" aria-live="polite">
-        <span className={job.status === "failed" ? "statusDot dangerDot" : "statusDot"} />
-        <strong>{job.status === "failed" ? "后端异常" : job.status === "running" ? "后端执行中" : "后端状态"}</strong>
-        <span>{job.message}</span>
-      </footer>
       {showBlockingProgress && (
         <BackendActivityModal agentProgress={agentProgress} job={job} mode={draftGenerationMode} streamingTurns={streamingTurns} />
       )}
@@ -1135,6 +1255,1550 @@ function formatError(error: unknown, fallback: string) {
   if (typeof error === "string") return `${fallback}: ${error}`;
   if (error instanceof Error) return `${fallback}: ${error.message}`;
   return fallback;
+}
+
+type ZipProductPageProps = {
+  activeView: AppView;
+  agentRuntimeSettings: AgentRuntimeSettings;
+  appDataDir: string;
+  asrSettings: AsrSettings;
+  draft: EpisodeDraft | null;
+  draftGenerationMode: DraftGenerationMode;
+  feeds: FeedSource[];
+  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string };
+  historyDrafts: EpisodeDraft[];
+  hotspots: HotspotCandidate[];
+  interactiveSessionId: string;
+  interactiveStatus: InteractiveSessionEvent | null;
+  job: GenerationJob;
+  modelCatalog: ModelProvider[];
+  onAddFeed: (feed: FeedSource) => Promise<void>;
+  onDateRangeChange: (startDate: string, endDate: string, changed: ChangedDateBoundary) => void;
+  onDraftGenerationModeChange: (mode: DraftGenerationMode) => void;
+  onGenerateDraft: () => Promise<void>;
+  onGeneratePlan: () => Promise<void>;
+  onFinishInteractive: () => Promise<void>;
+  onHistoryRefresh: () => Promise<void>;
+  onImportAttachment: () => Promise<ManualAttachmentImportResult | null>;
+  onManualSubmit: (input: ManualHotspotInput) => Promise<void>;
+  onModelChange: (model: string) => void;
+  onNavigate: (view: AppView) => void;
+  onOpenDraftSource: () => Promise<void>;
+  onOpenSource: (hotspot: HotspotCandidate) => void;
+  onInterruptInteractive: () => Promise<void>;
+  onProviderChange: (providerId: string) => void;
+  onRefreshFeeds: () => Promise<void>;
+  onRefreshFromProvider: (settings: ProviderSettings) => Promise<void>;
+  onRefreshModels: () => Promise<void>;
+  onRunFetch: () => Promise<void>;
+  onSaveAgentSettings: (settings: AgentRuntimeSettings) => Promise<void>;
+  onSaveAsrSettings: (settings: AsrSettings) => Promise<void>;
+  onSaveDraft: () => Promise<void>;
+  onSaveSettings: (settings: ProviderSettings) => Promise<void>;
+  onSaveTtsSettings: (settings: TtsSettings) => Promise<void>;
+  onSelectHotspot: (hotspot: HotspotCandidate) => void;
+  onSetDraftStatus: (status: EpisodeDraft["status"]) => void;
+  onStartInteractiveDraft: () => Promise<void>;
+  onSubmitUserTurn: () => Promise<void>;
+  onExportDraft: (format: "md" | "html" | "pdf" | "mp3") => Promise<void>;
+  onTestSettingsPanel: (panel: "model" | "agent" | "tts" | "asr") => Promise<void>;
+  onToggleFeed: (feedId: string) => Promise<void>;
+  onToggleHotspotSelection: (hotspot: HotspotCandidate) => void;
+  onUpdatePlanAgenda: (index: number, value: string) => void;
+  onUpdatePlanTension: (index: number, value: string) => void;
+  onUpdatePlanTopicSummary: (value: string) => void;
+  onUpdatePlanTopicTitle: (value: string) => void;
+  onSelectCategoryForGeneration: (articles: ZipArticle[]) => void;
+  onGenerateCategoryPlan: (articles: ZipArticle[]) => Promise<void>;
+  providerSettings: ProviderSettings[];
+  roundtablePlan: RoundtablePlan | null;
+  selectedHotspot: HotspotCandidate | null;
+  selectedHotspotIds: string[];
+  selectedModel: string;
+  selectedProviderId: string;
+  ttsSettings: TtsSettings;
+  userInterjectionText: string;
+  onUserInterjectionTextChange: (value: string) => void;
+};
+
+type ZipPillVariant = "neutral" | "teal" | "blue" | "warning" | "error" | "success";
+
+function ZipProductPage(props: ZipProductPageProps) {
+  switch (props.activeView) {
+    case "workbench":
+      return <ZipShowPage {...props} />;
+    case "feeds":
+      return <ZipRssPage {...props} />;
+    case "hotspots":
+      return <ZipHotspotPage {...props} />;
+    case "manual":
+      return <ZipManualPage {...props} />;
+    case "plan":
+      return <ZipAgendaPage {...props} />;
+    case "draft":
+      return <ZipDraftPage {...props} />;
+    case "history":
+      return <ZipHistoryPage {...props} />;
+    case "settings":
+      return <ZipSettingsPage {...props} />;
+    default:
+      return null;
+  }
+}
+
+function ZipPageHeader({
+  actions,
+  label,
+  subtitle,
+  title
+}: {
+  actions?: ReactNode;
+  label: string;
+  subtitle: string;
+  title: string;
+}) {
+  return (
+    <div className="zipHeader">
+      <div>
+        <p className="zipHeaderLabel">{label}</p>
+        <h1>{title}</h1>
+        <p>{subtitle}</p>
+      </div>
+      <div className="zipHeaderActions">
+        <span className="zipDateChip">2026.06.15 - 06.21</span>
+        {actions}
+      </div>
+    </div>
+  );
+}
+
+function ZipPill({
+  active = false,
+  children,
+  onClick,
+  variant = "neutral"
+}: {
+  active?: boolean;
+  children: ReactNode;
+  onClick?: () => void;
+  variant?: ZipPillVariant;
+}) {
+  return (
+    <span className={`zipPill ${variant} ${active ? "active" : ""} ${onClick ? "clickable" : ""}`} onClick={onClick}>
+      {children}
+    </span>
+  );
+}
+
+function ZipBtn({
+  children,
+  disabled,
+  icon,
+  onClick,
+  variant = "ghost"
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  icon?: ReactNode;
+  onClick?: () => void;
+  variant?: "primary" | "ghost";
+}) {
+  return (
+    <button className={`zipBtn ${variant}`} disabled={disabled} onClick={onClick} type="button">
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function ZipCard({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={`zipCard ${className}`}>{children}</div>;
+}
+
+function ZipCommonActions({
+  canGenerate = true,
+  onGeneratePlan,
+  onRunFetch
+}: {
+  canGenerate?: boolean;
+  onGeneratePlan: () => Promise<void>;
+  onRunFetch: () => Promise<void>;
+}) {
+  return (
+    <>
+      <ZipBtn onClick={() => void onRunFetch()}>抓取 RSS</ZipBtn>
+      <ZipBtn disabled={!canGenerate} icon={<Zap size={13} />} onClick={() => void onGeneratePlan()} variant="primary">
+        生成圆桌
+      </ZipBtn>
+    </>
+  );
+}
+
+function ZipCheckbox({ selected }: { selected: boolean }) {
+  return <div className={`zipCheckbox ${selected ? "selected" : ""}`}>{selected && <Check size={11} strokeWidth={3} />}</div>;
+}
+
+function ZipShowPage({ feeds, filters, hotspots, job, onDateRangeChange, onGeneratePlan, onNavigate, onRunFetch, selectedHotspotIds }: ZipProductPageProps) {
+  const categories = buildZipCategories(hotspots, selectedHotspotIds);
+  const topHotspots = hotspots.slice(0, 5);
+  const sourceNames = new Set(hotspots.flatMap((hotspot) => hotspot.sources.map((source) => source.publisher)));
+  const activeFeeds = feeds.filter((feed) => feed.enabled).length;
+  const summaryText = hotspots.length > 0
+    ? `当前范围内共整理 ${hotspots.length} 个 RSS 热点，覆盖 ${sourceNames.size} 个来源。主要集中在${categories.slice(0, 3).map((category) => category.label).join("、") || "待分类热点"}，可进入热点库选择主线后生成圆桌。`
+    : "选择日期范围并抓取 RSS 后，这里会汇总全部候选热点、来源分布和主要话题。";
+
+  function changeDate(boundary: ChangedDateBoundary, value: string) {
+    const next = boundary === "startDate"
+      ? { startDate: value, endDate: filters.endDate }
+      : { startDate: filters.startDate, endDate: value };
+    const normalized = normalizeDateRange(next, boundary);
+    onDateRangeChange(normalized.startDate, normalized.endDate, boundary);
+  }
+
+  const dateRangePicker = (
+    <ZipCard className="zipDateRangeCard">
+      <div>
+        <CalendarDays size={16} />
+        <span>RSS 日期范围</span>
+      </div>
+      <label>
+        起始
+        <input
+          max={filters.endDate}
+          min={filters.endDate ? addDays(filters.endDate, -30) : undefined}
+          onChange={(event) => changeDate("startDate", event.target.value)}
+          type="date"
+          value={filters.startDate}
+        />
+      </label>
+      <label>
+        结尾
+        <input
+          max={filters.startDate ? addDays(filters.startDate, 30) : undefined}
+          min={filters.startDate}
+          onChange={(event) => changeDate("endDate", event.target.value)}
+          type="date"
+          value={filters.endDate}
+        />
+      </label>
+      <ZipPill variant="blue">最多 30 天</ZipPill>
+    </ZipCard>
+  );
+
+  if (hotspots.length === 0) {
+    return (
+      <div className="zipPage">
+        <ZipPageHeader
+          actions={<ZipCommonActions canGenerate={false} onGeneratePlan={onGeneratePlan} onRunFetch={onRunFetch} />}
+          label="首页"
+          subtitle="选择日期范围，抓取 RSS 后汇总全部热点。"
+          title="RSS 热点总览"
+        />
+        {dateRangePicker}
+        <ZipCard className="zipHotspotEmpty">
+          <div>
+            <span><Rss size={18} /></span>
+            <ZipPill variant="warning">未抓取</ZipPill>
+          </div>
+          <h2>还没有抓取 RSS</h2>
+          <p>点击抓取 RSS 后，系统会读取已启用来源，生成真实候选热点，并在首页总结全部 RSS 热点。</p>
+          <ZipBtn icon={<RefreshCcw size={14} />} onClick={() => void onRunFetch()} variant="primary">
+            抓取 RSS
+          </ZipBtn>
+        </ZipCard>
+      </div>
+    );
+  }
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={<ZipCommonActions canGenerate={selectedHotspotIds.length > 0} onGeneratePlan={onGeneratePlan} onRunFetch={onRunFetch} />}
+        label="首页"
+        subtitle={`${filters.startDate} - ${filters.endDate} · 全部 RSS 热点汇总`}
+        title="RSS 热点总览"
+      />
+
+      {dateRangePicker}
+
+      <ZipCard className="zipHeroCard zipSummaryHero">
+        <div className="zipHeroCopy">
+          <ZipPill variant={job.status === "running" ? "success" : "neutral"}>{job.status === "running" ? "RSS 抓取中" : "已汇总 RSS 热点"}</ZipPill>
+          <h2>当前范围内的 AI 热点概览</h2>
+          <p>{summaryText}</p>
+        </div>
+        <div className="zipHeroActions">
+          <ZipBtn icon={<Flame size={13} />} onClick={() => onNavigate("hotspots")} variant="primary">去热点库筛选</ZipBtn>
+          <ZipBtn icon={<Users size={13} />} onClick={() => onNavigate("plan")}>查看圆桌议程</ZipBtn>
+        </div>
+      </ZipCard>
+
+      <div className="zipStatGrid">
+        {[
+          { label: "RSS 热点", value: hotspots.length, sub: "当前范围", tone: "" },
+          { label: "来源覆盖", value: sourceNames.size, sub: `${activeFeeds || feeds.length} 个来源启用`, tone: "" },
+          { label: "已选热点", value: selectedHotspotIds.length, sub: "用于生成圆桌", tone: "teal" }
+        ].map((stat) => (
+          <ZipCard className="zipStatCard" key={stat.label}>
+            <p>{stat.label}</p>
+            <strong className={stat.tone}>{stat.value}</strong>
+            <span>{stat.sub}</span>
+          </ZipCard>
+        ))}
+      </div>
+
+      <div className="zipTwoCol">
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader">
+            <div>
+              <h3>分类概览</h3>
+              <p>按全部 RSS 热点自动归类</p>
+            </div>
+            <ZipPill>{categories.length} 类</ZipPill>
+          </div>
+          <div className="zipSummaryCategoryGrid">
+            {categories.map((category) => (
+              <div className={`zipSummaryCategory ${category.tone}`} key={category.key}>
+                <div>
+                  {category.icon}
+                  <strong>{category.label}</strong>
+                  <span>{category.articles.length} 篇</span>
+                </div>
+                <p>{category.articles.slice(0, 2).map((article) => article.title).join(" / ")}</p>
+              </div>
+            ))}
+          </div>
+        </ZipCard>
+
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader simple">
+            <h3>高优先级热点</h3>
+            <p>按分数和来源数量排序</p>
+          </div>
+          <div className="zipStack">
+            {topHotspots.map((hotspot, index) => (
+              <div className="zipAgendaRow" key={hotspot.id}>
+                <b>{index + 1}</b>
+                <span>{hotspot.title}</span>
+                <ZipPill variant={selectedHotspotIds.includes(hotspot.id) ? "success" : "neutral"}>{hotspot.score}</ZipPill>
+              </div>
+            ))}
+          </div>
+          <div className="zipCardFooter">
+            <ZipBtn icon={<ArrowRight size={13} />} onClick={() => onNavigate("hotspots")} variant="primary">进入热点库</ZipBtn>
+          </div>
+        </ZipCard>
+      </div>
+    </div>
+  );
+}
+
+function ZipRssPage({ feeds, onAddFeed, onRefreshFeeds, onRunFetch, onToggleFeed }: ZipProductPageProps) {
+  const [draftUrl, setDraftUrl] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const shownFeeds = feeds.length > 0 ? feeds : RSS_PRESETS.slice(0, 6);
+  const visibleFeeds = shownFeeds.filter((feed) => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) return true;
+    return feed.name.toLowerCase().includes(query) || feed.url.toLowerCase().includes(query);
+  });
+  const activeCount = shownFeeds.filter((feed) => feed.enabled).length;
+  const failedCount = shownFeeds.filter((feed) => feed.lastStatus === "failed").length;
+
+  async function addDraftFeed() {
+    if (!draftUrl.trim()) return;
+    await onAddFeed({
+      id: `feed-${Date.now()}`,
+      name: draftUrl.replace(/^https?:\/\//, "").split("/")[0] || "新来源",
+      url: draftUrl,
+      category: "market",
+      enabled: true,
+      lastStatus: "idle"
+    });
+    setDraftUrl("");
+  }
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={
+          <>
+            <ZipBtn icon={<Plus size={13} />} onClick={() => void addDraftFeed()}>添加来源</ZipBtn>
+            <ZipBtn icon={<RefreshCcw size={13} />} onClick={() => void onRunFetch()} variant="primary">全部抓取</ZipBtn>
+          </>
+        }
+        label="数据采集"
+        subtitle="配置和监控自动抓取的内容来源，失败源可重试或停用。"
+        title="RSS 源管理"
+      />
+
+      <div className="zipStatGrid">
+        {[
+          { label: "活跃来源", value: activeCount, tone: "teal" },
+          { label: "本周新文章", value: shownFeeds.reduce((sum, feed) => sum + (feed.lastFetchedAt ? 1 : 0), 0) || shownFeeds.length * 7, tone: "" },
+          { label: "失败来源", value: failedCount, tone: "danger" }
+        ].map((stat) => (
+          <ZipCard className="zipInlineStat" key={stat.label}>
+            <strong className={stat.tone}>{stat.value}</strong>
+            <span>{stat.label}</span>
+          </ZipCard>
+        ))}
+      </div>
+
+      <ZipCard className="zipTableCard">
+        <div className="zipTableHeader">
+          <h3>已配置来源</h3>
+          <div className="zipSearchBox"><Search size={13} /><input onChange={(event) => setSearchText(event.target.value)} placeholder="搜索来源..." value={searchText} /></div>
+        </div>
+        <div className="zipDivide">
+          {visibleFeeds.map((feed) => {
+            const ok = feed.lastStatus !== "failed";
+            return (
+              <div className="zipFeedRow" key={feed.id}>
+                <span className={`zipFeedDot ${ok ? "" : "failed"}`} />
+                <div>
+                  <strong>{feed.name}</strong>
+                  <span>{feed.url.replace(/^https?:\/\//, "")}</span>
+                </div>
+                <em>{feed.lastFetchedAt ? "已抓取" : "待抓取"}</em>
+                <ZipPill variant={ok ? "success" : "error"}>{ok ? "正常" : "抓取失败"}</ZipPill>
+                {!ok && <ZipBtn icon={<RefreshCcw size={12} />} onClick={() => void onRefreshFeeds()}>重试</ZipBtn>}
+                <button className="zipIconButton danger" onClick={() => void onToggleFeed(feed.id)} type="button">
+                  {feed.enabled ? <X size={13} /> : <Check size={13} />}
+                </button>
+              </div>
+            );
+          })}
+          {visibleFeeds.length === 0 && <div className="zipEmptyInline">没有匹配的来源</div>}
+        </div>
+      </ZipCard>
+
+      <ZipCard className="zipFormStrip">
+        <h3>添加新来源</h3>
+        <div>
+          <input onChange={(event) => setDraftUrl(event.target.value)} placeholder="RSS feed URL，例如 https://openai.com/news/rss" value={draftUrl} />
+          <ZipBtn icon={<Plus size={13} />} onClick={() => void addDraftFeed()} variant="primary">添加</ZipBtn>
+        </div>
+        <p>支持 RSS 2.0、Atom 1.0 和 JSON Feed 格式</p>
+      </ZipCard>
+    </div>
+  );
+}
+
+type ZipArticle = {
+  date: string;
+  hotspot?: HotspotCandidate;
+  selected: boolean;
+  source: string;
+  summary: string;
+  title: string;
+};
+
+type ZipCategory = {
+  articles: ZipArticle[];
+  icon: ReactNode;
+  key: HotspotDisplayCategoryKey;
+  label: string;
+  tone: string;
+};
+
+function buildZipCategories(hotspots: HotspotCandidate[], selectedHotspotIds: string[]): ZipCategory[] {
+  if (hotspots.length === 0) {
+    return [];
+  }
+
+  const buckets: ZipCategory[] = [
+    { key: "model", label: "模型能力", icon: <Cpu size={14} />, tone: "blue", articles: [] },
+    { key: "agent", label: "Agent 工程", icon: <Zap size={14} />, tone: "green", articles: [] },
+    { key: "product", label: "产品动态", icon: <TrendingUp size={14} />, tone: "amber", articles: [] },
+    { key: "investment", label: "投融资", icon: <DollarSign size={14} />, tone: "red", articles: [] },
+    { key: "research", label: "学术前沿", icon: <BookOpen size={14} />, tone: "gray", articles: [] },
+    { key: "other", label: "其他", icon: <Layers size={14} />, tone: "slate", articles: [] }
+  ];
+  hotspots.forEach((hotspot) => {
+    const bucket = buckets.find((item) => item.key === inferHotspotDisplayCategory(hotspot));
+    if (!bucket) {
+      return;
+    }
+    bucket.articles.push({
+      date: formatLooseDate(hotspot.sources[0]?.publishedAt ?? hotspot.createdAt).replace(/^2026\./, ""),
+      hotspot,
+      selected: selectedHotspotIds.includes(hotspot.id),
+      source: primarySourceName(hotspot),
+      summary: hotspot.summary,
+      title: hotspot.title
+    });
+  });
+  return buckets.filter((bucket) => bucket.articles.length > 0);
+}
+
+function ZipHotspotPage({ hotspots, onGenerateCategoryPlan, onGeneratePlan, onNavigate, onOpenSource, onRunFetch, onSelectHotspot, onToggleHotspotSelection, selectedHotspotIds }: ZipProductPageProps) {
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const categories = buildZipCategories(hotspots, selectedHotspotIds);
+  const selectedStaticCount = categories.flatMap((category) => category.articles).filter((article) => article.selected).length;
+  const totalSelected = selectedHotspotIds.length || selectedStaticCount;
+  const filtered = categories
+    .map((category) => ({
+      ...category,
+      articles: searchText
+        ? category.articles.filter((article) => article.title.includes(searchText) || article.summary.includes(searchText))
+        : category.articles
+    }))
+    .filter((category) => category.articles.length > 0 && (!activeCategory || category.key === activeCategory));
+
+  function toggleArticle(article: ZipArticle) {
+    if (article.hotspot) {
+      onSelectHotspot(article.hotspot);
+      onToggleHotspotSelection(article.hotspot);
+    }
+  }
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={
+          <>
+            <ZipBtn onClick={() => void onRunFetch()}>抓取 RSS</ZipBtn>
+            {totalSelected > 0 && (
+              <ZipBtn icon={<Zap size={13} />} onClick={() => void onGeneratePlan().then(() => onNavigate("plan"))} variant="primary">
+                生成圆桌（{totalSelected}）
+              </ZipBtn>
+            )}
+          </>
+        }
+        label="候选池"
+        subtitle="文章按话题分类，选择感兴趣的条目后生成圆桌。"
+        title="筛选本周值得讨论的 AI 热点"
+      />
+
+      <div className="zipFilterBar">
+        <ZipPill active={activeCategory === null} onClick={() => setActiveCategory(null)}>全部</ZipPill>
+        {categories.map((category) => {
+          const selectedCount = category.articles.filter((article) => article.selected).length;
+          return (
+            <button className={`zipCategoryPill ${category.tone} ${activeCategory === category.key ? "active" : ""}`} key={category.key} onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)} type="button">
+              {category.icon}
+              {category.label}
+              {selectedCount > 0 && <b>{selectedCount}</b>}
+            </button>
+          );
+        })}
+        <div className="zipFilterGrow" />
+        <div className="zipSearchBox"><Search size={13} /><input onChange={(event) => setSearchText(event.target.value)} placeholder="搜索标题、摘要..." value={searchText} /></div>
+      </div>
+
+      {hotspots.length === 0 && (
+        <ZipCard className="zipHotspotEmpty">
+          <div>
+            <span><Rss size={18} /></span>
+            <ZipPill variant="warning">未抓取</ZipPill>
+          </div>
+          <h2>还没有抓取 RSS</h2>
+          <p>先抓取 RSS，AI小圆桌会把来源文章整理成候选热点，再按模型能力、Agent 工程、产品动态等分类展示。</p>
+          <ZipBtn icon={<RefreshCcw size={14} />} onClick={() => void onRunFetch()} variant="primary">
+            抓取 RSS
+          </ZipBtn>
+        </ZipCard>
+      )}
+
+      <div className="zipCategoryStack">
+        {filtered.map((category) => {
+          const selectedCount = category.articles.filter((article) => article.selected).length;
+          return (
+            <ZipCard className="zipCategoryCard" key={category.key}>
+              <div className={`zipCategoryHeader ${category.tone}`}>
+                <div>
+                  {category.icon}
+                  <strong>{category.label}</strong>
+                  <span>{category.articles.length} 篇</span>
+                </div>
+                <div>
+                  {selectedCount > 0 && <span>已选 {selectedCount} 篇</span>}
+                  <ZipBtn icon={<Zap size={12} />} onClick={() => void onGenerateCategoryPlan(category.articles).then(() => onNavigate("plan"))} variant="primary">从此分类生成圆桌</ZipBtn>
+                </div>
+              </div>
+              <div className="zipDivide">
+                {category.articles.map((article) => (
+                  <div className={`zipArticleRow ${article.selected ? "selected" : ""}`} key={`${category.key}-${article.title}`} onClick={() => toggleArticle(article)}>
+                    <ZipCheckbox selected={article.selected} />
+                    <div>
+                      <strong>{article.title}</strong>
+                      <p>{article.summary}</p>
+                    </div>
+                    <aside>
+                      <span>{article.date}</span>
+                      <button onClick={(event) => { event.stopPropagation(); if (article.hotspot) void onOpenSource(article.hotspot); }} type="button">{article.source}</button>
+                    </aside>
+                  </div>
+                ))}
+              </div>
+            </ZipCard>
+          );
+        })}
+      </div>
+
+      {totalSelected > 0 && (
+        <button className="zipFloatingAction" onClick={() => void onGeneratePlan().then(() => onNavigate("plan"))} type="button">
+          <Zap size={15} />
+          生成圆桌 · 已选 {totalSelected} 篇
+          <ArrowRight size={15} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ZipManualPage({ onGeneratePlan, onImportAttachment, onManualSubmit, onRunFetch }: ZipProductPageProps) {
+  const [form, setForm] = useState({ angle: "", source: "", summary: "", title: "" });
+  const [attached, setAttached] = useState(false);
+
+  async function submitManual() {
+    if (!form.title.trim()) return;
+    await onManualSubmit({
+      summary: form.summary || form.angle,
+      title: form.title,
+      url: form.source
+    });
+    setForm({ angle: "", source: "", summary: "", title: "" });
+  }
+
+  async function importAttachment() {
+    const result = await onImportAttachment();
+    setAttached(Boolean(result));
+  }
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={<ZipCommonActions onGeneratePlan={onGeneratePlan} onRunFetch={onRunFetch} />}
+        label="补充资料"
+        subtitle="轻量投稿表单，强调来源可追溯和写入反馈。"
+        title="把 RSS 没覆盖的信息加入本周候选"
+      />
+
+      <div className="zipManualGrid">
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader simple">
+            <h3>补充一个热点</h3>
+            <p>适合小道消息、会议笔记、本地文件和人工判断</p>
+          </div>
+          <div className="zipFieldStack">
+            {[
+              { key: "title", label: "热点标题", placeholder: "一句话概括这个热点...", multiline: false },
+              { key: "summary", label: "事实摘要", placeholder: "什么发生了，谁做的，什么时间...", multiline: true },
+              { key: "source", label: "来源链接或本地文件", placeholder: "https:// 或拖入本地文件", multiline: false },
+              { key: "angle", label: "希望圆桌讨论的角度", placeholder: "你认为最值得深挖的问题或争议点...", multiline: true }
+            ].map((field) => (
+              <label className="zipField" key={field.key}>
+                <span>{field.label}</span>
+                {field.multiline ? (
+                  <textarea onChange={(event) => setForm({ ...form, [field.key]: event.target.value })} placeholder={field.placeholder} value={form[field.key as keyof typeof form]} />
+                ) : (
+                  <input onChange={(event) => setForm({ ...form, [field.key]: event.target.value })} placeholder={field.placeholder} value={form[field.key as keyof typeof form]} />
+                )}
+              </label>
+            ))}
+          </div>
+          <div className="zipSubmitRow">
+            <ZipBtn icon={<Plus size={13} />} onClick={() => void submitManual()} variant="primary">加入候选池</ZipBtn>
+            <ZipBtn onClick={() => setForm({ angle: "", source: "", summary: "", title: "" })}>清空</ZipBtn>
+          </div>
+        </ZipCard>
+
+        <div className="zipStack">
+          <ZipCard className="zipDropCard">
+            <div className="zipDropIcon"><FileText size={18} /></div>
+            <h3>导入本地资料</h3>
+            <p>支持 PDF、Markdown、TXT 和网页剪贴。导入后会写入补充资料池。</p>
+            <ZipBtn icon={<Plus size={13} />} onClick={() => void importAttachment()} variant="primary">{attached ? "已导入，继续添加" : "选择文件"}</ZipBtn>
+          </ZipCard>
+          <ZipCard className="zipSectionCard">
+            <div className="zipCardHeader simple">
+              <h3>写入反馈</h3>
+              <p>确保编辑知道刚才发生了什么</p>
+            </div>
+            <div className="zipChecklist">
+              <label><ZipCheckbox selected={Boolean(form.title)} />标题已填写</label>
+              <label><ZipCheckbox selected={Boolean(form.summary)} />事实摘要已填写</label>
+              <label><ZipCheckbox selected={Boolean(form.source) || attached} />来源可追溯</label>
+            </div>
+          </ZipCard>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ZIP_GUESTS = [
+  { bg: "green", icon: <Radio size={18} />, label: "主持人", sublabel: "Host" },
+  { bg: "blue", icon: <Layers size={18} />, label: "消费者（产品使用者）", sublabel: "User" },
+  { bg: "amber", icon: <Terminal size={18} />, label: "热点技术人员", sublabel: "Technical" },
+  { bg: "gray", icon: <LineChart size={18} />, label: "投资人", sublabel: "Investor" }
+];
+
+function AutoGrowTextarea({
+  className,
+  disabled,
+  onChange,
+  rows = 1,
+  value
+}: {
+  className: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  rows?: number;
+  value: string;
+}) {
+  const textareaRef = useRef<ElementRef<"textarea">>(null);
+
+  function resize() {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }
+
+  useEffect(() => {
+    resize();
+  }, [value]);
+
+  function handleChange(event: ChangeEvent<ElementRef<"textarea">>) {
+    onChange(event.target.value);
+    globalThis.requestAnimationFrame(resize);
+  }
+
+  return (
+    <textarea
+      className={className}
+      disabled={disabled}
+      onChange={handleChange}
+      ref={textareaRef}
+      rows={rows}
+      value={value}
+    />
+  );
+}
+
+function ZipAgendaPage({
+  onGenerateDraft,
+  onGeneratePlan,
+  onRunFetch,
+  onUpdatePlanAgenda,
+  onUpdatePlanTension,
+  onUpdatePlanTopicSummary,
+  onUpdatePlanTopicTitle,
+  roundtablePlan,
+  selectedHotspot
+}: ZipProductPageProps) {
+  const topic = getPlanTopicDisplay(roundtablePlan, selectedHotspot, "等待模型提炼主题", "生成圆桌议程后显示模型总结。");
+  const agendaItems = roundtablePlan?.agenda.length
+    ? roundtablePlan.agenda
+    : ["热点扫盲：事实、范围、关键玩家", "第一视角：为什么现在变重要", "商业影响：谁会付费，谁会被替代", "工程难点：稳定性、审计和成本", "本周判断：编辑给出的行动建议"];
+  const tensions = roundtablePlan?.tensionPoints.length
+    ? roundtablePlan.tensionPoints
+    : ["能力 vs 可靠性", "演示效果 vs 生产成本", "平台入口 vs 企业权限", "速度叙事 vs 来源事实"];
+  const risks = roundtablePlan?.sourceRisks.length
+    ? roundtablePlan.sourceRisks
+    : ["产品发布口径需降调", "融资金额需二次确认", "不要把模拟嘉宾当真人采访"];
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={<ZipCommonActions onGeneratePlan={onGeneratePlan} onRunFetch={onRunFetch} />}
+        label="节目策划"
+        subtitle="把中控 Agent 的计划做成可编辑的节目策划板。"
+        title="先审议程，再生成圆桌稿"
+      />
+
+      <ZipCard className="zipHeroCard">
+        <div className="zipHeroCopy">
+          <ZipPill variant="success">已基于 {selectedHotspot?.sourceCount ?? 12} 个来源</ZipPill>
+          <AutoGrowTextarea
+            className="zipTopicTitleInput"
+            disabled={!roundtablePlan}
+            onChange={onUpdatePlanTopicTitle}
+            value={topic.title}
+          />
+          <AutoGrowTextarea
+            className="zipTopicSummaryInput"
+            disabled={!roundtablePlan}
+            onChange={onUpdatePlanTopicSummary}
+            rows={3}
+            value={topic.summary}
+          />
+        </div>
+        <ZipBtn icon={<FileText size={13} />} onClick={() => void onGenerateDraft()} variant="primary">生成圆桌稿</ZipBtn>
+      </ZipCard>
+
+      <ZipCard className="zipSectionCard">
+        <div className="zipCardHeader">
+          <div>
+            <h3>模拟嘉宾</h3>
+            <p>清楚标注为模拟角色</p>
+          </div>
+          <ZipPill variant="warning">模拟角色</ZipPill>
+        </div>
+        <div className="zipGuestRow">
+          {ZIP_GUESTS.map((guest) => (
+            <div className="zipGuest" key={guest.label}>
+              <div className={guest.bg}>{guest.icon}</div>
+              <strong>{guest.label}</strong>
+              <span>{guest.sublabel}</span>
+            </div>
+          ))}
+        </div>
+      </ZipCard>
+
+      <div className="zipAgendaGrid">
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader simple">
+            <h3>议程</h3>
+            <p>生成前可编辑的节目结构</p>
+          </div>
+          <div className="zipStack">
+            {agendaItems.slice(0, 5).map((item, index) => (
+              <label className="zipAgendaDraggable" key={`agenda-${index}`}>
+                <b>{index + 1}</b>
+                <AutoGrowTextarea
+                  className="zipAgendaText"
+                  disabled={!roundtablePlan}
+                  onChange={(value) => onUpdatePlanAgenda(index, value)}
+                  rows={2}
+                  value={item}
+                />
+                <ChevronRight size={14} />
+              </label>
+            ))}
+          </div>
+        </ZipCard>
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader simple">
+            <h3>冲突点</h3>
+            <p>让观点不变成流水账</p>
+          </div>
+          <div className="zipStack">
+            {tensions.slice(0, 4).map((item, index) => (
+              <label className="zipReviewCard warning" key={`tension-${index}`}>
+                <AutoGrowTextarea
+                  className="zipReviewText"
+                  disabled={!roundtablePlan}
+                  onChange={(value) => onUpdatePlanTension(index, value)}
+                  rows={2}
+                  value={item}
+                />
+              </label>
+            ))}
+          </div>
+        </ZipCard>
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader simple">
+            <h3>来源风险</h3>
+            <p>生成前必须看见</p>
+          </div>
+          <div className="zipStack">{risks.slice(0, 3).map((risk, index) => <div className="zipReviewCard risk" key={`${risk}-${index}`}>{risk}</div>)}</div>
+        </ZipCard>
+      </div>
+    </div>
+  );
+}
+
+function getDraftTurns(draft: EpisodeDraft | null): DialogueTurn[] {
+  if (draft?.dialogue.length) return draft.dialogue.slice(0, 4);
+  return [
+    { intent: "open", speakerId: "host", text: "我们先把事实边界说清楚：这不是单个产品发布，而是一组 Agent 工作流能力进入生产系统。" },
+    { intent: "business", speakerId: "participant", text: "作为产品使用者，我最关心的变化是入口。用户不再只是问答，而是把任务交给系统完成。" },
+    { intent: "technical", speakerId: "expert", text: "我会保守一点：稳定性、权限和回滚机制还没到能大规模托管关键流程。" }
+  ];
+}
+
+function speakerLabel(speakerId: DialogueTurn["speakerId"]) {
+  if (speakerId === "host") return "主持人";
+  if (speakerId === "participant") return "消费者（产品使用者）";
+  if (speakerId === "expert") return "热点技术人员";
+  if (speakerId === "investor") return "投资人";
+  return "用户";
+}
+
+function ZipSpeakerAvatar({ speakerId }: { speakerId: DialogueTurn["speakerId"] }) {
+  if (speakerId === "participant") return <div className="zipSpeakerAvatar blue"><Layers size={16} /></div>;
+  if (speakerId === "expert") return <div className="zipSpeakerAvatar amber"><Terminal size={16} /></div>;
+  if (speakerId === "investor") return <div className="zipSpeakerAvatar gray"><LineChart size={16} /></div>;
+  return <div className="zipSpeakerAvatar green"><Radio size={16} /></div>;
+}
+
+function ZipDraftPage({ draft, interactiveSessionId, interactiveStatus, job, onExportDraft, onFinishInteractive, onGeneratePlan, onInterruptInteractive, onOpenDraftSource, onRunFetch, onSaveDraft, onSetDraftStatus, onStartInteractiveDraft, onSubmitUserTurn, onUserInterjectionTextChange, userInterjectionText }: ZipProductPageProps) {
+  const isDraftRunning = job.status === "running" && job.type === "draft";
+  const isInteractive = Boolean(interactiveSessionId);
+  const canInterrupt = isInteractive && interactiveStatus?.status === "running";
+  const canSubmitUserTurn = isInteractive && (interactiveStatus?.status === "awaiting_user" || interactiveStatus?.status === "interrupted");
+  const canFinishInteractive = isInteractive && interactiveStatus?.status !== "finished";
+  const turns = draft?.dialogue.slice(0, 6) ?? [];
+  const sourceCount = draft?.sources.length ?? 0;
+  const factCheckCount = draft?.factChecks.length ?? 0;
+
+  if (!draft) {
+    return (
+      <div className="zipPage">
+        <ZipPageHeader
+          actions={<ZipCommonActions onGeneratePlan={onGeneratePlan} onRunFetch={onRunFetch} />}
+          label="创作编辑"
+          subtitle="先选择热点并生成圆桌稿，之后再保存、导出和审稿。"
+          title="圆桌稿"
+        />
+        <ZipCard className="zipHotspotEmpty">
+          <div>
+            <span><FileText size={18} /></span>
+            <ZipPill variant={isDraftRunning ? "success" : "warning"}>{isDraftRunning ? "生成中" : "未生成"}</ZipPill>
+          </div>
+          <h2>{isDraftRunning ? "圆桌稿正在生成" : "还没有圆桌稿"}</h2>
+          <p>{isDraftRunning ? job.message : "先从热点库选择文章，生成议程后再生成圆桌稿。"}</p>
+          {isDraftRunning ? <div className="zipProgressTrack"><span style={{ width: "62%" }} /></div> : null}
+        </ZipCard>
+      </div>
+    );
+  }
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={<ZipCommonActions onGeneratePlan={onGeneratePlan} onRunFetch={onRunFetch} />}
+        label="创作编辑"
+        subtitle="对话稿、来源、审稿风险和互动控制保持同步。"
+        title="圆桌稿"
+      />
+
+      <div className="zipDraftGrid">
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader">
+            <div>
+              <h3>圆桌稿</h3>
+              <p>{draft.summary}</p>
+            </div>
+            <ZipPill variant={isDraftRunning ? "success" : "neutral"}>{isDraftRunning ? "运行中" : statusLabel(draft.status)}</ZipPill>
+          </div>
+          <div className="zipStack">
+            {turns.length === 0 ? (
+              <div className="zipTurn">
+                <ZipSpeakerAvatar speakerId="host" />
+                <div>
+                  <div>
+                    <strong>等待内容</strong>
+                    <ZipPill variant={isDraftRunning ? "success" : "warning"}>{isDraftRunning ? "生成中" : "无对话"}</ZipPill>
+                  </div>
+                  <p>{isDraftRunning ? job.message : "当前草稿还没有对话内容。"}</p>
+                </div>
+              </div>
+            ) : turns.map((turn, index) => (
+              <div className="zipTurn" key={`${turn.speakerId}-${index}`}>
+                <ZipSpeakerAvatar speakerId={turn.speakerId} />
+                <div>
+                  <div>
+                    <strong>{speakerLabel(turn.speakerId)}</strong>
+                    <ZipPill variant={index === turns.length - 1 && canInterrupt ? "warning" : "neutral"}>{turn.interrupted ? "已打断" : turn.intent}</ZipPill>
+                  </div>
+                  <p>{turn.text}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="zipLiveBox">
+            <p>{interactiveStatus?.message ?? (isDraftRunning ? job.message : "可以启动互动圆桌，或在系统等待你发言时插入观点。")}</p>
+            <div className="zipProgressTrack"><span style={{ width: isDraftRunning ? "62%" : "18%" }} /></div>
+            <textarea disabled={!canSubmitUserTurn} onChange={(event) => onUserInterjectionTextChange(event.target.value)} placeholder="插入我的观点..." value={userInterjectionText} />
+            <div>
+              {!isInteractive && <ZipBtn disabled={isDraftRunning} icon={<Radio size={12} />} onClick={() => void onStartInteractiveDraft()}>启动互动</ZipBtn>}
+              {canInterrupt && <ZipBtn icon={<Pause size={12} />} onClick={() => void onInterruptInteractive()}>打断当前发言</ZipBtn>}
+              {canFinishInteractive && <ZipBtn disabled={isDraftRunning && !canSubmitUserTurn} icon={<CheckCircle2 size={12} />} onClick={() => void onFinishInteractive()}>结束互动</ZipBtn>}
+              <ZipBtn disabled={!canSubmitUserTurn || !userInterjectionText.trim()} icon={<Plus size={12} />} onClick={() => void onSubmitUserTurn()} variant="primary">插入我的观点</ZipBtn>
+            </div>
+          </div>
+        </ZipCard>
+
+        <ZipCard className="zipSectionCard zipReviewPanel">
+          <div className="zipCardHeader simple">
+            <h3>审稿侧栏</h3>
+            <p>来源、风险、导出和状态</p>
+          </div>
+          <div className="zipReviewStats">
+            <div><span>事实核查</span><strong>{factCheckCount}</strong></div>
+            <div><span>来源链接</span><strong>{sourceCount}</strong></div>
+          </div>
+          <div className="zipChecklist">
+            {[
+              { done: sourceCount > 0, label: "来源已附加", warn: sourceCount === 0 },
+              { done: draft.guests.length > 0, label: "模拟角色已标注", warn: false },
+              { done: factCheckCount === 0, label: factCheckCount > 0 ? "仍有事实核查项" : "暂无事实核查项", warn: factCheckCount > 0 },
+              { done: turns.length > 1, label: "观点有来回", warn: turns.length <= 1 }
+            ].map((check) => (
+              <label className={check.warn ? "warning" : ""} key={check.label}>
+                <ZipCheckbox selected={check.done} />
+                {check.label}
+              </label>
+            ))}
+          </div>
+          <div className="zipDivider" />
+          <p className="zipUpperLabel">导出格式</p>
+          <div className="zipStack">
+            {[
+              { format: "md" as const, label: "导出 Markdown" },
+              { format: "html" as const, label: "导出 HTML" },
+              { format: "pdf" as const, label: "导出 PDF" },
+              { format: "mp3" as const, label: "导出 MP3" }
+            ].map((item, index) => (
+              <ZipBtn disabled={isDraftRunning} icon={<Download size={12} />} key={item.format} onClick={() => void onExportDraft(item.format)} variant={index === 0 ? "primary" : "ghost"}>{item.label}</ZipBtn>
+            ))}
+          </div>
+          <div className="zipStatusPills">
+            <ZipPill active={draft.status === "draft"} onClick={isDraftRunning ? undefined : () => onSetDraftStatus("draft")} variant="warning">草稿</ZipPill>
+            <ZipPill active={draft.status === "reviewed"} onClick={isDraftRunning ? undefined : () => onSetDraftStatus("reviewed")}>已审</ZipPill>
+            <ZipPill active={draft.status === "published"} onClick={isDraftRunning ? undefined : () => onSetDraftStatus("published")}>已发布</ZipPill>
+          </div>
+          <div className="zipDivider" />
+          <div className="zipButtonRow">
+            <ZipBtn disabled={isDraftRunning} icon={<Save size={12} />} onClick={() => void onSaveDraft()} variant="primary">保存草稿</ZipBtn>
+            <ZipBtn icon={<Eye size={12} />} onClick={() => void onOpenDraftSource()}>打开来源</ZipBtn>
+          </div>
+        </ZipCard>
+      </div>
+    </div>
+  );
+}
+
+function ZipDraftPageLegacy({ draft, interactiveSessionId, interactiveStatus, job, onExportDraft, onFinishInteractive, onGeneratePlan, onInterruptInteractive, onOpenDraftSource, onRunFetch, onSaveDraft, onSetDraftStatus, onStartInteractiveDraft, onSubmitUserTurn, onUserInterjectionTextChange, userInterjectionText }: ZipProductPageProps) {
+  const isDraftRunning = job.status === "running" && job.type === "draft";
+  const isInteractive = Boolean(interactiveSessionId);
+  const canInterrupt = isInteractive && interactiveStatus?.status === "running";
+  const canSubmitUserTurn = isInteractive && (interactiveStatus?.status === "awaiting_user" || interactiveStatus?.status === "interrupted");
+  const canFinishInteractive = isInteractive && interactiveStatus?.status !== "finished";
+  void onFinishInteractive;
+  void onInterruptInteractive;
+  void canInterrupt;
+  void canSubmitUserTurn;
+  void canFinishInteractive;
+
+  if (!draft) {
+    return (
+      <div className="zipPage">
+        <ZipPageHeader
+          actions={<ZipCommonActions onGeneratePlan={onGeneratePlan} onRunFetch={onRunFetch} />}
+          label="创作编辑"
+          subtitle="先选择热点并生成圆桌稿，之后再保存、导出和审稿。"
+          title="圆桌稿"
+        />
+        <ZipCard className="zipHotspotEmpty">
+          <div>
+            <span><FileText size={18} /></span>
+            <ZipPill variant={isDraftRunning ? "success" : "warning"}>{isDraftRunning ? "生成中" : "未生成"}</ZipPill>
+          </div>
+          <h2>{isDraftRunning ? "圆桌稿正在生成" : "还没有圆桌稿"}</h2>
+          <p>{isDraftRunning ? job.message : "先从热点库选择文章，生成议程后再生成圆桌稿。"}</p>
+          {isDraftRunning ? <div className="zipProgressTrack"><span style={{ width: "62%" }} /></div> : null}
+        </ZipCard>
+      </div>
+    );
+  }
+
+  const turns = getDraftTurns(draft);
+  const sourceCount = draft.sources.length;
+  const checks = [
+    { done: sourceCount > 0, label: "来源已附加", warn: false },
+    { done: true, label: "模拟角色已标注", warn: false },
+    { done: false, label: "数字/日期需复核", warn: true },
+    { done: turns.length > 1, label: "观点有差异", warn: false }
+  ];
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={<ZipCommonActions onGeneratePlan={onGeneratePlan} onRunFetch={onRunFetch} />}
+        label="创作编辑"
+        subtitle="对话稿是主画布，来源和审稿风险始终在右侧。"
+        title="生成、打断、编辑和事实检查在同一屏"
+      />
+
+      <div className="zipDraftGrid">
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader">
+            <div>
+              <h3>圆桌稿</h3>
+              <p>角色化对话流，支持生成中和人工插话</p>
+            </div>
+            <ZipPill variant={job.status === "running" ? "success" : "neutral"}>{job.status === "running" ? "互动圆桌运行中" : draft?.status ?? "草稿"}</ZipPill>
+          </div>
+          <div className="zipStack">
+            {turns.map((turn, index) => (
+              <div className="zipTurn" key={`${turn.speakerId}-${index}`}>
+                <ZipSpeakerAvatar speakerId={turn.speakerId} />
+                <div>
+                  <div>
+                    <strong>{speakerLabel(turn.speakerId)}</strong>
+                    <ZipPill variant={index === turns.length - 1 ? "warning" : "neutral"}>{index === turns.length - 1 ? "可打断" : "已引用来源"}</ZipPill>
+                  </div>
+                  <p>{turn.text}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="zipLiveBox">
+            <p>{job.status === "running" ? "AI 正在组织下一轮发言..." : "可以继续生成或插入你的观点"}</p>
+            <div className="zipProgressTrack"><span style={{ width: job.status === "running" ? "62%" : "18%" }} /></div>
+            <textarea onChange={(event) => onUserInterjectionTextChange(event.target.value)} placeholder="插入我的观点..." value={userInterjectionText} />
+            <div>
+              <ZipBtn icon={<Pause size={12} />} onClick={() => void onStartInteractiveDraft()}>打断</ZipBtn>
+              <ZipBtn icon={<Plus size={12} />} onClick={() => void onSubmitUserTurn()} variant="primary">插入我的观点</ZipBtn>
+            </div>
+          </div>
+        </ZipCard>
+
+        <ZipCard className="zipSectionCard zipReviewPanel">
+          <div className="zipCardHeader simple">
+            <h3>审稿侧栏</h3>
+            <p>来源、风险、导出和状态</p>
+          </div>
+          <div className="zipReviewStats">
+            <div><span>事实检查</span><strong>3 项</strong></div>
+            <div><span>来源链接</span><strong>{sourceCount}</strong></div>
+          </div>
+          <div className="zipChecklist">
+            {checks.map((check) => (
+              <label className={check.warn ? "warning" : ""} key={check.label}>
+                <ZipCheckbox selected={check.done} />
+                {check.label}
+              </label>
+            ))}
+          </div>
+          <div className="zipDivider" />
+          <p className="zipUpperLabel">导出格式</p>
+          <div className="zipStack">
+            {[
+              { format: "md" as const, label: "导出 Markdown" },
+              { format: "html" as const, label: "导出 HTML" },
+              { format: "pdf" as const, label: "导出 PDF" },
+              { format: "mp3" as const, label: "导出 MP3" }
+            ].map((item, index) => (
+              <ZipBtn icon={<Download size={12} />} key={item.format} onClick={() => void onExportDraft(item.format)} variant={index === 0 ? "primary" : "ghost"}>{item.label}</ZipBtn>
+            ))}
+          </div>
+          <div className="zipStatusPills">
+            <ZipPill active={draft?.status === "draft"} onClick={() => onSetDraftStatus("draft")} variant="warning">草稿</ZipPill>
+            <ZipPill active={draft?.status === "reviewed"} onClick={() => onSetDraftStatus("reviewed")}>已审</ZipPill>
+            <ZipPill active={draft?.status === "published"} onClick={() => onSetDraftStatus("published")}>已发布</ZipPill>
+          </div>
+          <div className="zipDivider" />
+          <div className="zipButtonRow">
+            <ZipBtn icon={<Save size={12} />} onClick={() => void onSaveDraft()} variant="primary">保存草稿</ZipBtn>
+            <ZipBtn icon={<Eye size={12} />} onClick={() => void onOpenDraftSource()}>打开来源</ZipBtn>
+          </div>
+        </ZipCard>
+      </div>
+    </div>
+  );
+}
+
+void ZipDraftPageLegacy;
+
+function ZipHistoryPage({ draft, historyDrafts, onExportDraft, onHistoryRefresh, onNavigate, onOpenDraftSource }: ZipProductPageProps) {
+  const [filter, setFilter] = useState("全部");
+  const [selected, setSelected] = useState(0);
+  const [detailMode, setDetailMode] = useState<"summary" | "sources" | "trace">("summary");
+  const items = historyDrafts.length > 0 ? historyDrafts : draft ? [draft] : [];
+  const fallback = [
+    { sourceCount: 8, status: "draft", title: "Agent 工具链进入生产化拐点", updatedAt: "2026.06.21" },
+    { sourceCount: 11, status: "reviewed", title: "开源模型上下文窗口竞赛", updatedAt: "2026.06.20" },
+    { sourceCount: 14, status: "published", title: "AI 浏览器与任务代理", updatedAt: "2026.06.19" },
+    { sourceCount: 17, status: "draft", title: "企业知识库 RAG 复兴", updatedAt: "2026.06.18" }
+  ];
+  const rows = items.length
+    ? items.map((item) => ({ sourceCount: item.sources.length, status: item.status, title: item.title, updatedAt: formatLooseDate(item.updatedAt) }))
+    : fallback;
+  const visibleRows = rows.filter((row) => filter === "全部" || statusLabel(row.status) === filter);
+  const detail = visibleRows[Math.min(selected, Math.max(visibleRows.length - 1, 0))] ?? rows[0];
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={<ZipBtn icon={<RefreshCcw size={13} />} onClick={() => void onHistoryRefresh()} variant="primary">刷新历史</ZipBtn>}
+        label="作品库"
+        subtitle="列表筛选、状态切换、详情编辑和导出集中在这里。"
+        title="管理过去保存的圆桌稿"
+      />
+
+      <div className="zipHistoryGrid">
+        <ZipCard className="zipSectionCard">
+          <div className="zipCardHeader">
+            <div>
+              <h3>圆桌历史</h3>
+              <p>按状态、更新时间和来源筛选</p>
+            </div>
+            <div className="zipPillGroup">{["全部", "草稿", "已审", "已发布"].map((item) => <ZipPill active={filter === item} key={item} onClick={() => setFilter(item)}>{item}</ZipPill>)}</div>
+          </div>
+          <div className="zipStack">
+            {visibleRows.map((item, index) => (
+              <div className={`zipHistoryRow ${selected === index ? "active" : ""}`} key={`${item.title}-${index}`} onClick={() => setSelected(index)}>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.updatedAt} · {item.sourceCount} 来源</span>
+                </div>
+                <ZipPill variant={item.status === "published" ? "blue" : item.status === "reviewed" ? "success" : "warning"}>{statusLabel(item.status)}</ZipPill>
+              </div>
+            ))}
+            {visibleRows.length === 0 && <div className="zipEmptyInline">没有这个状态的圆桌稿</div>}
+          </div>
+        </ZipCard>
+
+        <ZipCard className="zipSectionCard zipDetailCard">
+          <div className="zipCardHeader simple">
+            <h3>详情编辑</h3>
+            <p>选中历史后可二次编辑并导出</p>
+          </div>
+          <h2>{detail.title}</h2>
+          <p>本期圆桌聚焦 agent 工具链的生产化趋势：浏览器操作、代码生成、企业权限和长任务调度正在合流。</p>
+          <div className="zipStack">
+            <ZipBtn icon={<FileText size={12} />} onClick={() => onNavigate("draft")} variant="primary">编辑标题摘要</ZipBtn>
+            <ZipBtn icon={<Eye size={12} />} onClick={() => { setDetailMode("sources"); void onOpenDraftSource(); }}>查看来源</ZipBtn>
+            <ZipBtn icon={<BarChart2 size={12} />} onClick={() => setDetailMode("trace")}>查看 Agent Trace</ZipBtn>
+            <ZipBtn icon={<Download size={12} />} onClick={() => void onExportDraft("mp3")}>导出 MP3</ZipBtn>
+          </div>
+          <div className="zipTraceBox">
+            <strong>{detailMode === "sources" ? "来源" : detailMode === "trace" ? "Agent Trace" : "摘要"}</strong>
+            <p>
+              {detailMode === "sources"
+                ? `当前稿件包含 ${detail.sourceCount} 个来源，已尝试打开第一个来源。`
+                : detailMode === "trace"
+                  ? "包含中控决策、工具调用、来源摘要和生成轮次。"
+                  : "本期圆桌聚焦 agent 工具链的生产化趋势。"}
+            </p>
+          </div>
+        </ZipCard>
+      </div>
+    </div>
+  );
+}
+
+function statusLabel(status: EpisodeDraft["status"] | string) {
+  if (status === "published") return "已发布";
+  if (status === "reviewed") return "已审";
+  return "草稿";
+}
+
+function ZipSettingsPage({
+  agentRuntimeSettings,
+  appDataDir,
+  asrSettings,
+  draftGenerationMode,
+  modelCatalog,
+  onDraftGenerationModeChange,
+  onModelChange,
+  onProviderChange,
+  onRefreshFromProvider,
+  onRefreshModels,
+  onSaveAgentSettings,
+  onSaveAsrSettings,
+  onSaveSettings,
+  onSaveTtsSettings,
+  onTestSettingsPanel,
+  providerSettings,
+  selectedModel,
+  selectedProviderId,
+  ttsSettings
+}: ZipProductPageProps) {
+  const [tab, setTab] = useState<"roundtable" | "agent" | "tts" | "asr">("roundtable");
+  const selectedProvider = modelCatalog.find((provider) => provider.id === selectedProviderId);
+  const saved = providerSettings.find((settings) => settings.providerId === selectedProviderId);
+  const [apiKey, setApiKey] = useState(saved?.apiKey ?? "");
+  const [baseUrl, setBaseUrl] = useState(saved?.baseUrl ?? selectedProvider?.baseUrl ?? "");
+  const [agentSettingsDraft, setAgentSettingsDraft] = useState<AgentRuntimeSettings>(agentRuntimeSettings);
+  const [ttsProviderId, setTtsProviderId] = useState<TtsSettings["providerId"]>(ttsSettings.providerId);
+  const [ttsApiKey, setTtsApiKey] = useState(ttsSettings.apiKey ?? "");
+  const [ttsBaseUrl, setTtsBaseUrl] = useState(ttsSettings.baseUrl);
+  const [ttsModel, setTtsModel] = useState(ttsSettings.selectedModel);
+  const [asrApiKey, setAsrApiKey] = useState(asrSettings.apiKey ?? "");
+  const [asrBaseUrl, setAsrBaseUrl] = useState(asrSettings.baseUrl);
+  const [asrModel, setAsrModel] = useState(asrSettings.selectedModel);
+  const ttsProvider = TTS_PROVIDER_OPTIONS.find((item) => item.id === ttsProviderId) ?? TTS_PROVIDER_OPTIONS[0];
+
+  useEffect(() => {
+    setApiKey(saved?.apiKey ?? "");
+    setBaseUrl(saved?.baseUrl ?? selectedProvider?.baseUrl ?? "");
+  }, [saved?.apiKey, saved?.baseUrl, selectedProvider?.baseUrl, selectedProviderId]);
+
+  useEffect(() => {
+    setAgentSettingsDraft(agentRuntimeSettings);
+  }, [agentRuntimeSettings]);
+
+  useEffect(() => {
+    setTtsProviderId(ttsSettings.providerId);
+    setTtsApiKey(ttsSettings.apiKey ?? "");
+    setTtsBaseUrl(ttsSettings.baseUrl);
+    setTtsModel(ttsSettings.selectedModel);
+  }, [ttsSettings.apiKey, ttsSettings.baseUrl, ttsSettings.providerId, ttsSettings.selectedModel]);
+
+  useEffect(() => {
+    setAsrApiKey(asrSettings.apiKey ?? "");
+    setAsrBaseUrl(asrSettings.baseUrl);
+    setAsrModel(asrSettings.selectedModel);
+  }, [asrSettings.apiKey, asrSettings.baseUrl, asrSettings.selectedModel]);
+
+  const currentSettings: ProviderSettings = {
+    providerId: selectedProviderId,
+    baseUrl,
+    apiKey,
+    selectedModel,
+    draftGenerationMode
+  };
+  const normalizedTtsModel =
+    ttsProvider.models.includes(ttsModel) || ttsProvider.id !== "dashscope" ? ttsModel : ttsProvider.models[0] ?? ttsModel;
+  const ttsModelOptions = ttsProvider.id === "dashscope" || ttsProvider.models.includes(ttsModel) ? ttsProvider.models : [ttsModel, ...ttsProvider.models];
+  const currentTtsSettings: TtsSettings = {
+    providerId: ttsProviderId,
+    baseUrl: ttsBaseUrl,
+    apiKey: ttsApiKey,
+    selectedModel: normalizedTtsModel
+  };
+  const currentAsrSettings: AsrSettings = {
+    providerId: "dashscope",
+    baseUrl: asrBaseUrl,
+    apiKey: asrApiKey,
+    selectedModel: asrModel
+  };
+  const tabItems = [
+    { id: "roundtable", label: "圆桌模型" },
+    { id: "agent", label: "Agent" },
+    { id: "tts", label: "TTS" },
+    { id: "asr", label: "ASR" }
+  ] as const;
+
+  function handleTtsProviderChange(providerId: TtsSettings["providerId"]) {
+    const nextProvider = TTS_PROVIDER_OPTIONS.find((item) => item.id === providerId) ?? TTS_PROVIDER_OPTIONS[0];
+    setTtsProviderId(providerId);
+    setTtsBaseUrl(nextProvider.baseUrl);
+    setTtsModel(nextProvider.models[0] ?? "");
+    setTtsApiKey(ttsSettings.providerId === providerId ? ttsSettings.apiKey ?? "" : "");
+  }
+
+  async function saveActivePanel() {
+    if (tab === "roundtable") {
+      await onSaveSettings(currentSettings);
+      return;
+    }
+    if (tab === "agent") {
+      await onSaveAgentSettings(agentSettingsDraft);
+      return;
+    }
+    if (tab === "tts") {
+      await onSaveTtsSettings(currentTtsSettings);
+      return;
+    }
+    await onSaveAsrSettings(currentAsrSettings);
+  }
+
+  return (
+    <div className="zipPage">
+      <ZipPageHeader
+        actions={
+          <div className="zipButtonRow">
+            <ZipBtn icon={<RefreshCcw size={13} />} onClick={() => void onRefreshModels()}>重置内置列表</ZipBtn>
+            <ZipBtn icon={<RefreshCcw size={13} />} onClick={() => void onRefreshFromProvider(currentSettings)} variant="primary">更新模型</ZipBtn>
+          </div>
+        }
+        label="配置中心"
+        subtitle="保留当前设置页样式，恢复上一版可编辑、可保存、可测试的完整配置能力。"
+        title="模型、Agent、语音能力设置"
+      />
+
+      <div className="zipFilterBar compact">
+        {tabItems.map((item) => <ZipPill active={tab === item.id} key={item.id} onClick={() => setTab(item.id)}>{item.label}</ZipPill>)}
+      </div>
+
+      <div className="zipSettingsGrid">
+        {tab === "roundtable" ? (
+          <ZipCard className="zipSectionCard">
+            <div className="zipCardHeader">
+              <div>
+                <h3>圆桌模型配置</h3>
+                <p>用于生成圆桌议程和圆桌稿，保存后会刷新当前厂商模型。</p>
+              </div>
+              <ZipPill variant={apiKey ? "success" : "warning"}>{apiKey ? "已配置" : "待配置"}</ZipPill>
+            </div>
+            <strong className="zipProviderName">{selectedProvider?.name ?? "OpenAI Compatible"}</strong>
+            <div className="zipSettingsFields">
+              <label className="zipField">
+                <span>厂商</span>
+                <select onChange={(event) => onProviderChange(event.target.value)} value={selectedProviderId}>
+                  {modelCatalog.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                </select>
+              </label>
+              <label className="zipField">
+                <span>模型</span>
+                <select onChange={(event) => onModelChange(event.target.value)} value={selectedModel}>
+                  {(selectedProvider?.models ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </label>
+            </div>
+            <label className="zipField">
+              <span>Base URL</span>
+              <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
+            </label>
+            <label className="zipField">
+              <span>API Key</span>
+              <input
+                autoComplete="off"
+                placeholder={selectedProvider?.requiresApiKey ? "输入后本地保存，界面不会明文展示完整 key" : "本地生成器不需要 API Key"}
+                type="password"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+              />
+            </label>
+            <label className="zipField">
+              <span>稿件生成模式</span>
+              <select value={draftGenerationMode} onChange={(event) => onDraftGenerationModeChange(event.target.value as DraftGenerationMode)}>
+                <option value="single">一个模型直接生成整稿</option>
+                <option value="multi_agent">中控调度，多次调用嘉宾独立发言</option>
+                <option value="autonomous_agent">0.4 强自治 Agent 圆桌</option>
+              </select>
+            </label>
+          </ZipCard>
+        ) : tab === "agent" ? (
+          <ZipCard className="zipSectionCard">
+            <div className="zipCardHeader">
+              <div>
+                <h3>Agent 工具与检索</h3>
+                <p>用于强自治圆桌、本地记忆、补充资料和通用 JSON Web Search API。</p>
+              </div>
+              <ZipPill variant={agentSettingsDraft.searchApiKey ? "success" : "warning"}>{agentSettingsDraft.searchApiKey ? "已配置搜索" : "未配置搜索"}</ZipPill>
+            </div>
+            <div className="zipSettingsFields">
+              <label className="zipField">
+                <span>默认讨论深度</span>
+                <select
+                  value={agentSettingsDraft.discussionDepth}
+                  onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, discussionDepth: event.target.value as DiscussionDepth })}
+                >
+                  <option value="low">低：更快，工具预算较少</option>
+                  <option value="medium">中：默认，质量和速度平衡</option>
+                  <option value="high">高：更充分，工具预算较高</option>
+                </select>
+              </label>
+              <label className="zipField">
+                <span>Agent 生成引擎</span>
+                <select
+                  value={agentSettingsDraft.generationEngine}
+                  onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, generationEngine: event.target.value as AgentRuntimeSettings["generationEngine"] })}
+                >
+                  <option value="native">Native Rust Runtime</option>
+                </select>
+              </label>
+            </div>
+            <label className="zipField">
+              <span>Search API Base URL</span>
+              <input placeholder="https://your-search-api.example.com/search" value={agentSettingsDraft.searchBaseUrl} onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchBaseUrl: event.target.value })} />
+            </label>
+            <label className="zipField">
+              <span>Search API Key</span>
+              <input autoComplete="off" type="password" value={agentSettingsDraft.searchApiKey ?? ""} onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchApiKey: event.target.value })} />
+            </label>
+            <div className="zipSettingsFields">
+              <label className="zipField">
+                <span>搜索语言</span>
+                <input value={agentSettingsDraft.searchLanguage} onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchLanguage: event.target.value })} />
+              </label>
+              <label className="zipField">
+                <span>默认结果数</span>
+                <input min={1} max={10} type="number" value={agentSettingsDraft.searchMaxResults} onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchMaxResults: Number(event.target.value) })} />
+              </label>
+            </div>
+            <label className="zipField">
+              <span>搜索时间范围（天，可空）</span>
+              <input
+                min={0}
+                type="number"
+                value={agentSettingsDraft.searchRecencyDays ?? ""}
+                onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, searchRecencyDays: event.target.value ? Number(event.target.value) : undefined })}
+              />
+            </label>
+            <label className="checkboxLine">
+              <input checked={agentSettingsDraft.debugTraceEnabled} type="checkbox" onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, debugTraceEnabled: event.target.checked })} />
+              保存 debug 级完整 agent trace
+            </label>
+            <p className="mutedText">Search API 使用通用 JSON 接口：请求包含 <code>query</code>、<code>maxResults</code>、<code>language</code>、<code>recencyDays</code>，响应可以是数组或 <code>{"{ results: [...] }"}</code>。</p>
+          </ZipCard>
+        ) : tab === "tts" ? (
+          <ZipCard className="zipSectionCard">
+            <div className="zipCardHeader">
+              <div>
+                <h3>TTS 配音模型配置</h3>
+                <p>用于导出 MP3 圆桌录音，保存后会生成测试音频检查连通性。</p>
+              </div>
+              <ZipPill variant={ttsApiKey ? "success" : "neutral"}>{ttsApiKey ? "已配置" : "待测试"}</ZipPill>
+            </div>
+            <div className="zipSettingsFields">
+              <label className="zipField">
+                <span>TTS 厂商</span>
+                <select value={ttsProviderId} onChange={(event) => handleTtsProviderChange(event.target.value as TtsSettings["providerId"])}>
+                  {TTS_PROVIDER_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              <label className="zipField">
+                <span>TTS 模型</span>
+                <select value={normalizedTtsModel} onChange={(event) => setTtsModel(event.target.value)}>
+                  {ttsModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </label>
+            </div>
+            <label className="zipField">
+              <span>TTS Base URL</span>
+              <input value={ttsBaseUrl} onChange={(event) => setTtsBaseUrl(event.target.value)} />
+            </label>
+            <label className="zipField">
+              <span>TTS API Key</span>
+              <input autoComplete="off" placeholder={ttsProvider.apiKeyPlaceholder} type="password" value={ttsApiKey} onChange={(event) => setTtsApiKey(event.target.value)} />
+            </label>
+            <p className="mutedText">不同角色的声音和朗读要求配置在 <code>config/prompts/personas.json</code> 的 <code>tts</code> 字段里；这里仅配置 TTS 服务和模型。</p>
+            {ttsProviderId === "dashscope" && normalizedTtsModel === "cosyvoice-v3.5-plus" && (
+              <p className="mutedText">CosyVoice v3.5 plus 如果提示音色不可用，需要在 <code>personas.json</code> 的 <code>cosyVoice</code> 字段填写你在百炼里创建的声音复刻或声音设计音色 ID。</p>
+            )}
+          </ZipCard>
+        ) : (
+          <ZipCard className="zipSectionCard">
+            <div className="zipCardHeader">
+              <div>
+                <h3>Paraformer 语音转文字</h3>
+                <p>用于互动圆桌里把语音打断转成文字，发送前仍需确认文本。</p>
+              </div>
+              <ZipPill variant={asrApiKey ? "success" : "neutral"}>{asrApiKey ? "已配置" : "待配置"}</ZipPill>
+            </div>
+            <label className="zipField">
+              <span>ASR 厂商</span>
+              <input value="DashScope Paraformer" readOnly />
+            </label>
+            <label className="zipField">
+              <span>ASR 模型</span>
+              <input value={asrModel} onChange={(event) => setAsrModel(event.target.value)} />
+            </label>
+            <label className="zipField">
+              <span>WebSocket Base URL</span>
+              <input value={asrBaseUrl} onChange={(event) => setAsrBaseUrl(event.target.value)} />
+            </label>
+            <label className="zipField">
+              <span>API Key</span>
+              <input autoComplete="off" placeholder="填写 DashScope API Key；不填写时语音按钮不可用，文字打断仍可用" type="password" value={asrApiKey} onChange={(event) => setAsrApiKey(event.target.value)} />
+            </label>
+            <p className="mutedText">默认模型为 <code>paraformer-realtime-v2</code>。互动圆桌不会自动发送转写结果，必须由你确认后提交。</p>
+          </ZipCard>
+        )}
+      </div>
+
+      <ZipCard className="zipSuccessNote">
+        <p>保存后立即给出状态反馈</p>
+        <span>失败时保留当前输入，提示模型连接或调用没有成功。本地数据目录：{appDataDir || "未读取"}</span>
+        <div className="zipButtonRow">
+          <ZipBtn onClick={() => void saveActivePanel()} variant="primary">保存当前设置</ZipBtn>
+          <ZipBtn icon={<Shield size={12} />} onClick={() => void onTestSettingsPanel(tab === "roundtable" ? "model" : tab)}>测试连接</ZipBtn>
+        </div>
+      </ZipCard>
+    </div>
+  );
 }
 
 function compactText(value: string, maxLength: number) {
@@ -1446,10 +3110,12 @@ function mergeHotspots(hotspots: HotspotCandidate[]) {
 
 function createStreamingDraftShell(plan: RoundtablePlan, hotspot: HotspotCandidate): EpisodeDraft {
   const timestamp = new Date().toISOString();
+  const topicTitle = plan.topicTitle?.trim() || hotspot.title;
+  const topicSummary = plan.topicSummary?.trim() || "圆桌稿正在流式生成，新的嘉宾发言会逐轮出现在下方。";
   return {
     id: `streaming-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    title: `正在生成：${hotspot.title}`,
-    summary: "圆桌稿正在流式生成，新的嘉宾发言会逐轮出现在下方。",
+    title: `正在生成：${topicTitle}`,
+    summary: topicSummary,
     status: "draft",
     planId: plan.id,
     hotspotId: hotspot.id,
@@ -1492,6 +3158,162 @@ function upsertFinalTurn(turns: DialogueTurn[], turn: DialogueTurn) {
   return [...turns, turn];
 }
 
+function PageHeader({
+  actions,
+  eyebrow,
+  meta,
+  title
+}: {
+  actions?: ReactNode;
+  eyebrow: string;
+  meta?: string;
+  title: string;
+}) {
+  return (
+    <header className="topbar">
+      <div>
+        <p className="eyebrow">{eyebrow}</p>
+        <h1>{title}</h1>
+        {meta && <p className="sectionMeta">{meta}</p>}
+      </div>
+      {actions && <div className="topbarActions">{actions}</div>}
+    </header>
+  );
+}
+
+function getViewCopy(view: AppView) {
+  const copy: Record<AppView, { eyebrow: string; title: string; meta: string }> = {
+    workbench: {
+      eyebrow: "本周节目工作室",
+      title: "把本周 AI 热点做成一场圆桌",
+      meta: "先选热点，再生成议程和圆桌稿；来源、模拟角色和事实风险保持可见。"
+    },
+    feeds: {
+      eyebrow: "RSS 源管理",
+      title: "管理可信来源，而不是临时搜素材",
+      meta: "维护本地 RSS 源、启停抓取范围，并补充新的行业来源。"
+    },
+    hotspots: {
+      eyebrow: "热点库",
+      title: "今天可聊的热点",
+      meta: "像内容产品一样先挑主题，再保留编辑判断和来源证据。"
+    },
+    manual: {
+      eyebrow: "手动补充",
+      title: "把人工线索补进本周素材池",
+      meta: "支持粘贴内容和导入附件，补足 RSS 抓不到的现场信息。"
+    },
+    plan: {
+      eyebrow: "圆桌议程",
+      title: "把热点拆成一场有张力的讨论",
+      meta: "生成嘉宾视角、议程结构、冲突点和事实风险。"
+    },
+    draft: {
+      eyebrow: "创作编辑",
+      title: "生成、打断、编辑和事实检查在同一屏",
+      meta: "对话稿是主画布，来源和草稿风险始终在右侧。"
+    },
+    history: {
+      eyebrow: "历史",
+      title: "回看已生成的圆桌稿",
+      meta: "复盘来源、导出内容，并继续编辑已保存草稿。"
+    },
+    settings: {
+      eyebrow: "设置",
+      title: "配置模型、语音和本地运行方式",
+      meta: "API Key 保存在本地，生成链路保持 OpenAI 兼容。"
+    }
+  };
+
+  return copy[view];
+}
+
+function ProgramHero({
+  draft,
+  feeds,
+  hotspots,
+  selectedHotspotIds
+}: {
+  draft: EpisodeDraft | null;
+  feeds: FeedSource[];
+  hotspots: HotspotCandidate[];
+  selectedHotspotIds: string[];
+}) {
+  const primaryHotspot = hotspots[0];
+  const readiness = Math.min(
+    96,
+    Math.round(
+      (feeds.length > 0 ? 22 : 0) +
+        (hotspots.length > 0 ? 24 : 0) +
+        (selectedHotspotIds.length > 0 ? 18 : 0) +
+        (draft ? 22 : 0) +
+        8
+    )
+  );
+  const selectedCount = selectedHotspotIds.length;
+
+  return (
+    <section className="programHero">
+      <article className="programFeature">
+        <div className="topicArt" aria-hidden="true">
+          <span>本期主题</span>
+          <strong>{primaryHotspot ? compactText(primaryHotspot.title, 22) : "端侧智能正在改变 AI 产品节奏"}</strong>
+          <div className="topicBars">
+            {Array.from({ length: 14 }).map((_, index) => (
+              <i key={index} style={{ height: `${18 + ((index * 13) % 52)}px` }} />
+            ))}
+          </div>
+        </div>
+        <div className="programFeatureText">
+          <span>推荐节目线</span>
+          <h2>{primaryHotspot ? compactText(primaryHotspot.title, 34) : "OpenAI、端侧模型与浏览器 Agent 的新分歧"}</h2>
+          <p>{primaryHotspot ? compactText(primaryHotspot.summary, 90) : "把多个来源收束成一个可讨论主题：谁会掌控下一代 AI 入口？节目会保留真实来源、模拟角色标注和事实风险提示。"}</p>
+          <div className="heroChips">
+            <span>{feeds.length || 0} 个来源</span>
+            <span>{selectedCount > 0 ? `${selectedCount} 个已选` : "待选题"}</span>
+            <span>{draft ? "草稿已生成" : "草稿待生成"}</span>
+          </div>
+        </div>
+      </article>
+
+      <aside className="readinessPanel">
+        <div className="readinessTop">
+          <h2>节目准备度</h2>
+          <strong>{readiness}%</strong>
+        </div>
+        <ol className="readinessList">
+          <li className={selectedCount > 0 ? "done" : ""}>热点已选择</li>
+          <li className={hotspots.length > 0 ? "done" : ""}>素材已抓取</li>
+          <li className={feeds.length > 0 ? "done muted" : "muted"}>来源风险待核查</li>
+          <li className={draft ? "done muted" : "muted"}>草稿生成</li>
+        </ol>
+        <div className="progressTrack"><span style={{ width: `${readiness}%` }} /></div>
+      </aside>
+    </section>
+  );
+}
+
+function ProductStatusStrip({
+  draft,
+  feeds,
+  hotspots,
+  job
+}: {
+  draft: EpisodeDraft | null;
+  feeds: FeedSource[];
+  hotspots: HotspotCandidate[];
+  job: GenerationJob;
+}) {
+  return (
+    <section className="statusStrip" aria-live="polite">
+      <StatusPill label="本地后端" value={job.status === "failed" ? "需要检查" : job.status === "running" ? "运行中" : "已连接"} tone={job.status === "failed" ? "danger" : job.status === "running" ? "warning" : "success"} />
+      <StatusPill label="RSS 源" value={`${feeds.length} 个`} tone="neutral" />
+      <StatusPill label="候选热点" value={`${hotspots.length} 条`} tone="neutral" />
+      <StatusPill label="草稿状态" value={draft?.status ?? "未生成"} tone={draft?.status === "reviewed" || draft?.status === "published" ? "success" : "warning"} />
+    </section>
+  );
+}
+
 function StatusPill({ label, value, tone }: { label: string; value: string; tone: "success" | "warning" | "danger" | "neutral" }) {
   return (
     <div className={`statusPill ${tone}`}>
@@ -1501,7 +3323,7 @@ function StatusPill({ label, value, tone }: { label: string; value: string; tone
   );
 }
 
-function DateRangeControl({
+function ProductDateRangeControl({
   endDate,
   onSetCurrentWeek,
   onUpdate,
@@ -1520,6 +3342,190 @@ function DateRangeControl({
       <input aria-label="结束日期" type="date" value={endDate} onChange={(event) => onUpdate(startDate, event.target.value)} />
       <button className="miniButton" onClick={onSetCurrentWeek} type="button">本周</button>
     </div>
+  );
+}
+
+function ProductHotspotWorkspace({
+  availableSources,
+  availableTags,
+  filters,
+  hotspots,
+  mode,
+  onClearFilters,
+  onFiltersChange,
+  totalHotspots,
+  selectedHotspotIds,
+  onGeneratePlan,
+  onSelectHotspot,
+  onToggleHotspotSelection,
+  onOpenSource,
+  onFetch
+}: {
+  availableSources: string[];
+  availableTags: string[];
+  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string };
+  hotspots: HotspotCandidate[];
+  mode: "compact" | "library";
+  onClearFilters: () => void;
+  onFiltersChange: (filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string }) => void;
+  totalHotspots: number;
+  selectedHotspotIds: string[];
+  onGeneratePlan: () => void;
+  onSelectHotspot: (hotspot: HotspotCandidate) => void;
+  onToggleHotspotSelection: (hotspot: HotspotCandidate) => void;
+  onOpenSource: (hotspot: HotspotCandidate) => void;
+  onFetch: () => void;
+}) {
+  const hasSelection = selectedHotspotIds.length > 0;
+
+  return (
+    <div className="viewStack">
+      <section className="sectionHeader">
+        <div>
+          <p className="eyebrow">{mode === "compact" ? "今天可聊的热点" : "热点库"}</p>
+          <h2>{mode === "compact" ? "像内容产品一样先给出选择，再保留编辑能力" : "从候选热点中挑出本期圆桌主题"}</h2>
+          <p className="sectionMeta">当前显示 {hotspots.length} / {totalHotspots} 条候选，已选择 {selectedHotspotIds.length} 条。</p>
+        </div>
+        <div className="buttonGroup">
+          <button className="ghostButton" disabled={!hasSelection} onClick={onGeneratePlan} type="button">
+            <Bot size={16} />
+            生成议程{selectedHotspotIds.length > 1 ? `(${selectedHotspotIds.length})` : ""}
+          </button>
+        </div>
+      </section>
+
+      <ProductFilterControls
+        availableSources={availableSources}
+        availableTags={availableTags}
+        filters={filters}
+        onClearFilters={onClearFilters}
+        onFiltersChange={onFiltersChange}
+      />
+
+      {hotspots.length === 0 ? (
+        <EmptyState title="还没有候选热点" text="点击抓取 RSS，本地后端会读取来源配置并生成候选；如果已经抓取过，请检查筛选条件。" actionLabel="抓取 RSS" onAction={onFetch} />
+      ) : (
+        <ProductHotspotQueue
+          hotspots={hotspots}
+          onOpenSource={onOpenSource}
+          onSelectHotspot={onSelectHotspot}
+          onToggleHotspotSelection={onToggleHotspotSelection}
+          selectedHotspotIds={selectedHotspotIds}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProductHotspotQueue({
+  hotspots,
+  onOpenSource,
+  onSelectHotspot,
+  onToggleHotspotSelection,
+  selectedHotspotIds
+}: {
+  hotspots: HotspotCandidate[];
+  onOpenSource: (hotspot: HotspotCandidate) => void;
+  onSelectHotspot: (hotspot: HotspotCandidate) => void;
+  onToggleHotspotSelection: (hotspot: HotspotCandidate) => void;
+  selectedHotspotIds: string[];
+}) {
+  return (
+    <div className="productHotspotGrid">
+      {hotspots.map((hotspot) => {
+        const selected = selectedHotspotIds.includes(hotspot.id);
+        return (
+          <article
+            className={selected ? "productHotspotCard selected" : "productHotspotCard"}
+            key={hotspot.id}
+            onClick={() => {
+              onSelectHotspot(hotspot);
+              onToggleHotspotSelection(hotspot);
+            }}
+          >
+            <header>
+              <span className={selected ? "selectionBadge isSelected" : "selectionBadge"}>{selected ? "主选题" : "备选"}</span>
+              <strong>{hotspot.score}</strong>
+            </header>
+            <button className="textOpenButton" onClick={(event) => { event.stopPropagation(); void onOpenSource(hotspot); }} type="button">
+              <h3>{hotspot.title}</h3>
+            </button>
+            <p>{compactText(hotspot.summary, 92)}</p>
+            <div className="hotspotSignals">
+              {hotspot.matchedSignals.slice(0, 3).map((signal) => (
+                <span className="tag" key={signal}>{signal}</span>
+              ))}
+            </div>
+            <footer>
+              <span>{primarySourceName(hotspot)}</span>
+              <span>{hotspot.sourceCount} 个来源</span>
+              <span>{hotspot.status}</span>
+            </footer>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProductFilterControls({
+  availableSources,
+  availableTags,
+  filters,
+  onClearFilters,
+  onFiltersChange
+}: {
+  availableSources: string[];
+  availableTags: string[];
+  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string };
+  onClearFilters: () => void;
+  onFiltersChange: (filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string }) => void;
+}) {
+  return (
+    <section className="filterPanel">
+      <div className="filterPanelHeader">
+        <div>
+          <strong>筛选候选</strong>
+          <span>按时间、热度、标签和 RSS 来源收窄本周选题。</span>
+        </div>
+        <button className="miniButton" onClick={onClearFilters} type="button">
+          <RefreshCcw size={14} />
+          清空
+        </button>
+      </div>
+      <div className="filterBar">
+        <label>
+          开始
+          <input type="date" value={filters.startDate} onChange={(event) => onFiltersChange({ ...filters, startDate: event.target.value })} />
+        </label>
+        <label>
+          结束
+          <input type="date" value={filters.endDate} onChange={(event) => onFiltersChange({ ...filters, endDate: event.target.value })} />
+        </label>
+        <label>
+          最低热度
+          <input min="0" max="100" type="number" value={filters.minScore} onChange={(event) => onFiltersChange({ ...filters, minScore: Number(event.target.value) })} />
+        </label>
+        <label>
+          标签
+          <select value={filters.tag} onChange={(event) => onFiltersChange({ ...filters, tag: event.target.value })}>
+            <option value="all">全部标签</option>
+            {availableTags.map((tag) => (
+              <option key={tag} value={tag}>{tag}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          RSS 来源
+          <select value={filters.source} onChange={(event) => onFiltersChange({ ...filters, source: event.target.value })}>
+            <option value="all">全部来源</option>
+            {availableSources.map((source) => (
+              <option key={source} value={source}>{source}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </section>
   );
 }
 
@@ -1581,35 +3587,71 @@ function Workbench({
       {hotspots.length === 0 ? (
         <EmptyState title="还没有候选热点" text="点击抓取 RSS，后端会读取本地 RSS 源配置并抓取真实候选；如果已抓取过，请检查筛选条件。" actionLabel="抓取 RSS" onAction={onFetch} />
       ) : (
-        <div className="hotspotGrid">
-          {hotspots.map((hotspot) => (
-            <article
-              className={selectedHotspotIds.includes(hotspot.id) ? "hotspotCard selected" : "hotspotCard"}
-              key={hotspot.id}
-              onClick={() => {
-                onSelectHotspot(hotspot);
-                onToggleHotspotSelection(hotspot);
-              }}
-            >
-              <div className={selectedHotspotIds.includes(hotspot.id) ? "selectionBadge isSelected" : "selectionBadge"}>
-                {selectedHotspotIds.includes(hotspot.id) ? "已选择" : "未选择"}
-              </div>
-              <div className="hotspotMeta">
-                <span className="sourceName">{primarySourceName(hotspot)}</span>
-                <span>{primarySourceDate(hotspot)}</span>
-              </div>
-              <button className="textOpenButton" onClick={(event) => { event.stopPropagation(); void onOpenSource(hotspot); }} type="button">
-                <h3>{hotspot.title}</h3>
-              </button>
-              <p>{hotspot.summary}</p>
-              <footer>
-                <span>{hotspot.sourceCount} sources</span>
-                <span>{hotspot.category}</span>
-              </footer>
-            </article>
-          ))}
-        </div>
+        <HotspotQueue
+          hotspots={hotspots}
+          onOpenSource={onOpenSource}
+          onSelectHotspot={onSelectHotspot}
+          onToggleHotspotSelection={onToggleHotspotSelection}
+          selectedHotspotIds={selectedHotspotIds}
+        />
       )}
+    </div>
+  );
+}
+
+void Workbench;
+
+function HotspotQueue({
+  hotspots,
+  onOpenSource,
+  onSelectHotspot,
+  onToggleHotspotSelection,
+  selectedHotspotIds
+}: {
+  hotspots: HotspotCandidate[];
+  onOpenSource: (hotspot: HotspotCandidate) => void;
+  onSelectHotspot: (hotspot: HotspotCandidate) => void;
+  onToggleHotspotSelection: (hotspot: HotspotCandidate) => void;
+  selectedHotspotIds: string[];
+}) {
+  return (
+    <div className="hotspotGrid hotspotQueue">
+      {hotspots.map((hotspot) => {
+        const selected = selectedHotspotIds.includes(hotspot.id);
+        return (
+          <article
+            className={selected ? "hotspotCard selected" : "hotspotCard"}
+            key={hotspot.id}
+            onClick={() => {
+              onSelectHotspot(hotspot);
+              onToggleHotspotSelection(hotspot);
+            }}
+          >
+            <div className={selected ? "selectionBadge isSelected" : "selectionBadge"}>
+              {selected ? "已选择" : "未选择"}
+            </div>
+            <div className="hotspotMeta">
+              <span className="sourceName">{primarySourceName(hotspot)}</span>
+              <span>{primarySourceDate(hotspot)}</span>
+            </div>
+            <button className="textOpenButton" onClick={(event) => { event.stopPropagation(); void onOpenSource(hotspot); }} type="button">
+              <h3>{hotspot.title}</h3>
+            </button>
+            <p>{hotspot.summary}</p>
+            <div className="hotspotSignals">
+              <span className="score">{hotspot.score}</span>
+              {hotspot.matchedSignals.slice(0, 3).map((signal) => (
+                <span className="tag" key={signal}>{signal}</span>
+              ))}
+            </div>
+            <footer>
+              <span>{hotspot.sourceCount} sources</span>
+              <span>{hotspot.status}</span>
+              <span>{hotspot.category}</span>
+            </footer>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1672,6 +3714,114 @@ function FilterControls({
         </label>
       </div>
     </section>
+  );
+}
+
+function InspectorPanel({
+  draft,
+  hotspot,
+  job,
+  onGeneratePlan,
+  onOpenSource,
+  plan,
+  selectedCount
+}: {
+  draft: EpisodeDraft | null;
+  hotspot: HotspotCandidate | null;
+  job: GenerationJob;
+  onGeneratePlan: () => void;
+  onOpenSource: (url: string) => void;
+  plan: RoundtablePlan | null;
+  selectedCount: number;
+}) {
+  const hasSources = Boolean(hotspot?.sources.length || draft?.sources.length);
+  const sources = (draft?.sources.length ? draft.sources : hotspot?.sources ?? []).slice(0, 5);
+  const riskItems = draft?.factChecks.length ? draft.factChecks : plan?.sourceRisks ?? [];
+  const reviewItems = [
+    { label: "来源已附着", done: hasSources },
+    { label: "圆桌议程已生成", done: Boolean(plan) },
+    { label: "草稿已生成", done: Boolean(draft) },
+    { label: "模拟角色已标注", done: Boolean(plan?.guests.length || draft?.guests.length) }
+  ];
+
+  return (
+    <aside className="inspector workbenchInspector" aria-label="工作台检查器">
+      <div className="inspectorHeader">
+        <Activity size={16} />
+        <span>编辑检查器</span>
+      </div>
+
+      <section className="inspectorBlock">
+        <p className="eyebrow">当前焦点</p>
+        {hotspot ? (
+          <>
+            <h3>{hotspot.title}</h3>
+            <p>{hotspot.summary}</p>
+            <div className="inspectorMetrics">
+              <span>{selectedCount > 1 ? `${selectedCount} 个热点` : "单热点"}</span>
+              <span>{hotspot.sourceCount} 来源</span>
+              <span>{hotspot.status}</span>
+            </div>
+            <button className="primaryButton" disabled={selectedCount === 0 || job.status === "running"} onClick={onGeneratePlan} type="button">
+              <Bot size={16} />
+              生成议程
+            </button>
+          </>
+        ) : (
+          <p className="mutedText">抓取 RSS 后选择一个候选热点，来源、风险和下一步动作会显示在这里。</p>
+        )}
+      </section>
+
+      <section className="inspectorBlock">
+        <p className="eyebrow">来源</p>
+        {sources.length > 0 ? (
+          <div className="inspectorSourceList">
+            {sources.map((source) => (
+              <button className="inspectorSource" key={source.id} onClick={() => onOpenSource(source.url)} type="button">
+                <strong>{source.publisher}</strong>
+                <span>{source.title}</span>
+                {source.publishedAt && <small>{formatLooseDate(source.publishedAt)}</small>}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="mutedText">暂无来源。手动补充或 RSS 抓取成功后会显示。</p>
+        )}
+      </section>
+
+      <section className="inspectorBlock">
+        <p className="eyebrow">审核</p>
+        <div className="checklist">
+          {reviewItems.map((item) => (
+            <label key={item.label}>
+              <input checked={item.done} readOnly type="checkbox" />
+              {item.label}
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <section className="inspectorBlock">
+        <p className="eyebrow">事实风险</p>
+        {riskItems.length > 0 ? (
+          <div className="riskList">
+            {riskItems.slice(0, 4).map((item) => (
+              <p key={item}>{item}</p>
+            ))}
+          </div>
+        ) : (
+          <p className="mutedText">生成议程或草稿后，这里会列出来源风险和待核查点。</p>
+        )}
+      </section>
+
+      <section className="inspectorBlock">
+        <p className="eyebrow">生成状态</p>
+        <div className={`inspectorJob ${job.status}`}>
+          <strong>{job.status === "running" ? "执行中" : job.status === "failed" ? "需要处理" : "可继续"}</strong>
+          <span>{job.message}</span>
+        </div>
+      </section>
+    </aside>
   );
 }
 
@@ -3033,20 +5183,11 @@ function SettingsView({
                   ...agentSettingsDraft,
                   generationEngine: event.target.value as AgentRuntimeSettings["generationEngine"]
                 })
-              }
-            >
-              <option value="native">Native Rust Runtime</option>
-              <option value="python_remote">Python Agent Backend (LangGraph)</option>
-            </select>
-          </label>
-          <label>
-            Python Agent Endpoint
-            <input
-              placeholder="http://127.0.0.1:8787"
-              value={agentSettingsDraft.pythonAgentBaseUrl}
-              onChange={(event) => setAgentSettingsDraft({ ...agentSettingsDraft, pythonAgentBaseUrl: event.target.value })}
-            />
-          </label>
+            }
+          >
+            <option value="native">Native Rust Runtime</option>
+          </select>
+        </label>
           <label>
             Search API Base URL
             <input
@@ -3217,5 +5358,20 @@ function EmptyState({ title, text, actionLabel, onAction }: { title: string; tex
     </div>
   );
 }
+
+void PageHeader;
+void formatDateCn;
+void getViewCopy;
+void ProgramHero;
+void ProductStatusStrip;
+void ProductDateRangeControl;
+void ProductHotspotWorkspace;
+void InspectorPanel;
+void Feeds;
+void ManualInput;
+void PlanView;
+void DraftEditor;
+void HistoryView;
+void SettingsView;
 
 export default App;

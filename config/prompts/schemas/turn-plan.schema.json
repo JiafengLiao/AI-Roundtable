@@ -15,7 +15,7 @@
         "items": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["speakerId", "intent", "instruction"],
+          "required": ["speakerId", "intent", "instruction", "toolQueries"],
           "properties": {
             "speakerId": {
               "type": "string",
@@ -25,7 +25,13 @@
               "type": "string",
               "enum": ["open", "context", "intuition", "business", "technical", "challenge", "followup", "transition", "summary"]
             },
-            "instruction": { "type": "string" }
+            "instruction": { "type": "string" },
+            "toolQueries": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": { "type": "string" }
+            }
           }
         }
       },

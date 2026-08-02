@@ -83,6 +83,8 @@ export const hotspots: HotspotCandidate[] = [
 export const plan: RoundtablePlan = {
   id: "p-001",
   hotspotId: "h-001",
+  topicTitle: "Agent 工具链进入生产工作流",
+  topicSummary: "多个来源显示 agent 产品正在从演示能力转向可审计、可恢复的生产工作流，但真实落地仍取决于权限、安全、稳定性和成本。",
   objective: "解释 agent 从 demo 到生产工作流的信号，拆解技术可行性和商业落地的真实门槛。",
   audiencePromise: "让 AI 从业者在 8 分钟内判断这个热点对产品路线、工程投入和投资叙事的影响。",
   agenda: ["热点扫盲", "第一视角 intuition", "商业影响", "工程难点", "本周可行动判断"],
@@ -99,10 +101,10 @@ export const plan: RoundtablePlan = {
     },
     {
       id: "participant",
-      label: "热点参与者",
-      role: "从工程团队或产品团队的一线视角解释变化",
-      stance: "关注真实工作流里的摩擦和可用性",
-      speakingStyle: "带一点现场感，强调直觉和行业 know-how"
+      label: "消费者（产品使用者）",
+      role: "从真实使用体验、付费意愿和产品落地摩擦解释变化",
+      stance: "关注真实工作流里的摩擦、替代成本和可用性",
+      speakingStyle: "带一点现场感，强调使用直觉和持续付费判断"
     },
     {
       id: "investor",
@@ -113,7 +115,7 @@ export const plan: RoundtablePlan = {
     },
     {
       id: "expert",
-      label: "技术专家",
+      label: "热点技术人员",
       role: "分析模型、工具调用、权限、安全和评测",
       stance: "看重可靠性、可观测性和失败恢复",
       speakingStyle: "技术准确，但避免论文腔"

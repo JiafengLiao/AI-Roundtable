@@ -66,9 +66,10 @@ export function generateAutonomousEpisodeDraft(
   plan: RoundtablePlan,
   hotspot: HotspotCandidate,
   settings: ProviderSettings,
-  options: AutonomousDraftOptions
+  options: AutonomousDraftOptions,
+  agentRuntimeSettings: AgentRuntimeSettings
 ) {
-  return invoke<EpisodeDraft>("generate_autonomous_episode_draft", { plan, hotspot, settings, options });
+  return invoke<EpisodeDraft>("generate_autonomous_episode_draft", { plan, hotspot, settings, options, agentRuntimeSettings });
 }
 
 export function startInteractiveRoundtable(

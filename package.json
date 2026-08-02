@@ -6,6 +6,8 @@
   "description": "ai-roundtable local AI weekly roundtable content workbench built with Tauri, React, and TypeScript.",
   "scripts": {
     "dev": "vite",
+    "openspec": "node scripts/openspec.mjs",
+    "test:openspec": "node --test scripts/openspec.test.mjs",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext ts,tsx --max-warnings 0",

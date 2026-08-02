@@ -21,7 +21,7 @@ AI小圆桌是一个本地桌面 AI 周度热点圆桌内容生产工作台。�
 - 桌面端：Tauri v2
 - 前端：React、TypeScript、Vite
 - 后端壳层：Rust Tauri commands
-- 可选 agent 后端：`agent-backend/` 下的 Python FastAPI 服务
+- Agent 运行时：原生 Rust Tauri commands；`agent-backend/` 仅保留为实验归档
 - 存储：Tauri app data 目录下的本地 JSON
 - LLM：OpenAI-compatible 厂商，外加显式选择的本地 mock/rule 生成器
 - TTS：OpenAI TTS 和 DashScope TTS 适配器
@@ -130,40 +130,11 @@ npm run tauri:build:mac:universal
 - `multi_agent`：中控 agent 先规划轮次，再分别调用每个模拟嘉宾生成发言。
 - `autonomous_agent`：可选 agent runtime 路径，用于更深的分步生成。
 
-## 可选 Python Agent 后台
+## 原生强自治 Agent
 
-桌面应用可以完全走原生 Tauri/Rust 生成链路。Python 后台是可选能力，主要用于基于 FastAPI、LangGraph、LangChain 的实验性强自治 agent 模式。
+`autonomous_agent` 草稿生成模式现在由 Tauri/Rust 原生承载。运行时会把热点、来源和补充资料构建成本地记忆片段，按 `discussionDepth` 控制轮次范围，逐轮执行 `memory.search`，在配置 Search API Base URL 时可选调用通用 JSON Web Search API，并在最终 `EpisodeDraft` 中保留 `agentTrace`。
 
-前置要求：
-
-- Python 3.11+
-- `uv`
-- 桌面应用里已经配置可用的真实 LLM 厂商
-
-从项目根目录启动后台：
-
-```powershell
-cd agent-backend
-uv sync
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8787
-```
-
-macOS/Linux 使用同样命令：
-
-```bash
-cd agent-backend
-uv sync
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8787
-```
-
-然后打开桌面应用并配置：
-
-- 设置 -> 圆桌模型 -> 草稿生成模式：`0.4 强自治 Agent 圆桌`
-- 设置 -> Agent 工具 -> Agent engine：`Python Agent Backend (LangGraph)`
-- 设置 -> Agent 工具 -> Python Agent Endpoint：`http://127.0.0.1:8787`
-- 生成草稿前先保存 Agent 工具设置。
-
-Rust 侧会优先调用 `POST /v1/generate/events` 获取流式进度；如果流式接口失败，会降级到 `POST /v1/generate`。两个接口都返回桌面应用使用的标准 `EpisodeDraft` 结构。
+`agent-backend/` 下旧的 Python FastAPI/LangGraph 后台仅作为实验归档保留，不再是产品运行路径，也不会打包进桌面发布产物。
 
 ## TTS 与 MP3 导出
 
@@ -239,7 +210,7 @@ npm run build
 - Tauri 构建找不到 Rust/Cargo：把 `%USERPROFILE%\.cargo\bin` 加到当前 shell 的 `PATH`。
 - Windows 打包出现 C++ 工具链错误：安装 Visual Studio Build Tools，并包含 `Microsoft.VisualStudio.Workload.VCTools`。
 - 真实 LLM 生成失败：检查厂商、Base URL、API Key、选中模型和模型权限。
-- Python agent 生成失败：确认 `uvicorn` 正在 `127.0.0.1:8787` 运行，设置页里的 endpoint 与它一致，并且草稿生成模式是 `0.4 强自治 Agent 圆桌`。
+- 强自治 Agent 生成失败：检查模型厂商、Base URL、API Key、选中模型、Search API 配置和补充资料内容；未配置 Search API 时会自动跳过外部搜索。
 - TTS 返回空音频或 HTTP 400：确认 TTS 模型已开通，并且当前音色 ID 对该模型有效。
 - UI 设置看起来没有更新：检查 app data 目录；运行时设置从那里的本地 JSON 读取。
 
@@ -248,7 +219,7 @@ npm run build
 ```text
 src/                         React 前端
 src-tauri/                   Tauri Rust 后端和打包配置
-agent-backend/               可选 Python agent 后端
+agent-backend/               实验归档：旧 Python agent 后端参考实现
 config/prompts/              内置 prompt、persona、schema 和 fallback 配置
 docs/                        产品、技术、UX、打包和工作流文档
 dev_readme.md                英文开发命令和发布流程

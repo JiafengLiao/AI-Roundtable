@@ -4,8 +4,10 @@
   "schema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["objective", "audiencePromise", "agenda", "tensionPoints", "sourceRisks"],
+    "required": ["topicTitle", "topicSummary", "objective", "audiencePromise", "agenda", "tensionPoints", "sourceRisks"],
     "properties": {
+      "topicTitle": { "type": "string" },
+      "topicSummary": { "type": "string" },
       "objective": { "type": "string" },
       "audiencePromise": { "type": "string" },
       "agenda": {

@@ -36,8 +36,13 @@ Next implementation pass:
 3. Plan and source material go into one of two draft modes:
    - `single`: one constrained JSON call returns the complete `EpisodeDraft`.
    - `multi_agent`: one constrained JSON call returns the central turn plan, then one constrained JSON call per scheduled guest turn returns natural dialogue text.
+   - `autonomous_agent`: native Tauri/Rust runtime builds memory chunks from the hotspot, sources, and supplemental documents; applies `discussionDepth` to the turn range; runs per-turn `memory.search`; optionally posts to a configured generic JSON Search API; and returns an `EpisodeDraft` with `agentTrace`.
 4. The backend assembles `EpisodeDraft` as structured JSON.
 5. The UI exposes fact-check and review state before saving or publishing.
+
+The old FastAPI/LangGraph prototype under `agent-backend/` is retained only as
+an experimental archive. Desktop builds must not package Python, `uv`, or a
+Python sidecar for the autonomous runtime.
 
 Bundled prompt files live under `config/prompts/`; runtime app data stores a composed versioned `llm-prompts.json` copy for local tuning.
 

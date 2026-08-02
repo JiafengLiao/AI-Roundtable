@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI小圆桌 C端化方向</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      color: #f4f7f5;
+      background: #08090d;
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    main {
+      width: min(1180px, calc(100% - 36px));
+      margin: 0 auto;
+      padding: 36px 0 48px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 48px);
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      max-width: 780px;
+      margin: 14px 0 26px;
+      color: #aeb8b4;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+    .direction-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .direction-card {
+      display: grid;
+      gap: 14px;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 24px;
+      padding: 14px;
+      color: inherit;
+      text-align: left;
+      background: rgba(255,255,255,.045);
+      cursor: pointer;
+      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    }
+    .direction-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(102,242,213,.42);
+      background: rgba(255,255,255,.07);
+    }
+    .direction-card.selected {
+      border-color: #66f2d5;
+      box-shadow: 0 0 0 3px rgba(102,242,213,.22);
+    }
+    .mini-app {
+      min-height: 376px;
+      overflow: hidden;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: #111;
+    }
+    .screen-a { background: linear-gradient(160deg, #12151d 0%, #20202b 52%, #2d1f2b 100%); }
+    .screen-b { background: linear-gradient(160deg, #0f1518 0%, #17291f 48%, #23201b 100%); }
+    .screen-c { background: linear-gradient(160deg, #121318 0%, #18212a 52%, #121318 100%); }
+    .mini-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px;
+      color: #fff;
+      font-size: 12px;
+    }
+    .pill {
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: rgba(255,255,255,.12);
+    }
+    .mini-hero {
+      display: grid;
+      gap: 12px;
+      padding: 12px 18px 18px;
+      color: white;
+    }
+    .mini-hero h2 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    .mini-hero p {
+      margin: 0;
+      color: rgba(255,255,255,.72);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .big-action {
+      display: inline-flex;
+      width: fit-content;
+      border-radius: 999px;
+      padding: 9px 13px;
+      color: #07110f;
+      background: #66f2d5;
+      font-weight: 800;
+      font-size: 12px;
+    }
+    .episode-card,
+    .topic-card,
+    .feed-card {
+      margin: 10px 14px;
+      border-radius: 18px;
+      padding: 13px;
+      color: white;
+      background: rgba(255,255,255,.1);
+      box-shadow: 0 18px 48px rgba(0,0,0,.22);
+    }
+    .episode-card strong,
+    .topic-card strong,
+    .feed-card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+    .wave {
+      display: grid;
+      grid-template-columns: repeat(18, 1fr);
+      gap: 3px;
+      align-items: end;
+      height: 52px;
+    }
+    .wave i {
+      display: block;
+      border-radius: 999px;
+      background: #66f2d5;
+    }
+    .topic-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+      color: rgba(255,255,255,.72);
+      font-size: 12px;
+    }
+    .avatar-stack {
+      display: flex;
+      margin-top: 10px;
+    }
+    .avatar-stack i {
+      width: 26px;
+      height: 26px;
+      margin-right: -7px;
+      border: 2px solid rgba(255,255,255,.7);
+      border-radius: 999px;
+      background: #66f2d5;
+    }
+    .mini-tabs {
+      display: flex;
+      gap: 8px;
+      padding: 0 14px 10px;
+    }
+    .mini-tabs span {
+      border-radius: 999px;
+      padding: 7px 10px;
+      color: rgba(255,255,255,.72);
+      background: rgba(255,255,255,.08);
+      font-size: 11px;
+    }
+    .mini-tabs span:first-child {
+      color: #07110f;
+      background: #66f2d5;
+      font-weight: 800;
+    }
+    .card-body h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    .card-body p {
+      min-height: 76px;
+      margin: 8px 0 0;
+      color: #b7c2be;
+      line-height: 1.65;
+      font-size: 14px;
+    }
+    .selection {
+      position: sticky;
+      bottom: 0;
+      margin-top: 22px;
+      border: 1px solid rgba(102,242,213,.24);
+      border-radius: 18px;
+      padding: 14px 16px;
+      color: #dffdf7;
+      background: rgba(8,12,14,.86);
+      backdrop-filter: blur(18px);
+    }
+    @media (max-width: 980px) {
+      .direction-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>AI小圆桌更像 C 端产品时，应该先像哪一种？</h1>
+    <p class="subtitle">先选气质，不选最终细节。三种都保留真实来源、生成状态和编辑能力，只是把入口和视觉重心换掉。</p>
+    <section class="direction-grid" aria-label="设计方向">
+      <button class="direction-card" data-choice="A. 节目感首页">
+        <div class="mini-app screen-a">
+          <div class="mini-top"><strong>AI小圆桌</strong><span class="pill">本周节目</span></div>
+          <div class="mini-hero">
+            <h2>把本周 AI 热点做成一场圆桌</h2>
+            <p>进入后先看到“本期节目”，再展开选题、嘉宾和来源。</p>
+            <span class="big-action">开始制作</span>
+          </div>
+          <div class="episode-card">
+            <strong>OpenAI 与端侧智能的新分歧</strong>
+            <div class="wave">
+              <i style="height:18px"></i><i style="height:32px"></i><i style="height:22px"></i><i style="height:44px"></i><i style="height:28px"></i><i style="height:36px"></i><i style="height:20px"></i><i style="height:48px"></i><i style="height:30px"></i><i style="height:38px"></i><i style="height:24px"></i><i style="height:42px"></i><i style="height:26px"></i><i style="height:34px"></i><i style="height:20px"></i><i style="height:46px"></i><i style="height:28px"></i><i style="height:36px"></i>
+            </div>
+          </div>
+        </div>
+        <div class="card-body">
+          <h2>A. 节目感首页</h2>
+          <p>最像 C 端内容产品：用户先看到“本周要做的一期节目”，抓取、选题、生成都围绕节目推进。</p>
+        </div>
+      </button>
+      <button class="direction-card" data-choice="B. 创作者 App">
+        <div class="mini-app screen-b">
+          <div class="mini-top"><strong>AI小圆桌</strong><span class="pill">创作者空间</span></div>
+          <div class="mini-hero">
+            <h2>今天聊什么？</h2>
+            <p>更像一个给内容创作者用的个人工作室，轻松、直接、少一点后台感。</p>
+          </div>
+          <div class="mini-tabs"><span>推荐</span><span>市场</span><span>技术</span></div>
+          <div class="topic-card">
+            <strong>最值得聊的 3 个 AI 变化</strong>
+            <div class="topic-row"><span>01</span><span>模型发布</span><b>88</b></div>
+            <div class="topic-row"><span>02</span><span>开源争议</span><b>76</b></div>
+            <div class="topic-row"><span>03</span><span>产品更新</span><b>71</b></div>
+          </div>
+        </div>
+        <div class="card-body">
+          <h2>B. 创作者 App</h2>
+          <p>入口更亲和：先问“今天聊什么”，把复杂配置藏到后面，适合降低第一次使用的压力。</p>
+        </div>
+      </button>
+      <button class="direction-card" data-choice="C. 热点信息流">
+        <div class="mini-app screen-c">
+          <div class="mini-top"><strong>AI小圆桌</strong><span class="pill">热点流</span></div>
+          <div class="mini-hero">
+            <h2>从热点流里挑出本期主题</h2>
+            <p>更像信息消费产品：卡片流、榜单和人物观点更突出。</p>
+          </div>
+          <div class="feed-card">
+            <strong>AI Agent 浏览器大战升温</strong>
+            <div class="avatar-stack"><i></i><i style="background:#ffd166"></i><i style="background:#ef476f"></i><i style="background:#9bf6ff"></i></div>
+            <div class="topic-row"><span>来源 12</span><span>争议高</span><b>生成</b></div>
+          </div>
+          <div class="feed-card">
+            <strong>本周模型价格继续下探</strong>
+            <div class="topic-row"><span>来源 8</span><span>商业影响</span><b>查看</b></div>
+          </div>
+        </div>
+        <div class="card-body">
+          <h2>C. 热点信息流</h2>
+          <p>最像内容浏览产品：发现感强，但容易让“生成一篇圆桌稿”的主任务变得没那么聚焦。</p>
+        </div>
+      </button>
+    </section>
+    <div class="selection" id="selection">点击一个方向，或直接在对话里告诉我你偏好的感觉。</div>
+  </main>
+  <script>
+    const cards = document.querySelectorAll(".direction-card");
+    const output = document.querySelector("#selection");
+    cards.forEach((card) => {
+      card.addEventListener("click", () => {
+        cards.forEach((item) => item.classList.remove("selected"));
+        card.classList.add("selected");
+        output.textContent = "你当前选中：" + card.dataset.choice;
+      });
+    });
+  </script>
+</body>
+</html>

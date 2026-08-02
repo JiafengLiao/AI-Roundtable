@@ -20,9 +20,9 @@ Output:
 
 Required roles:
 - Host.
-- Hotspot participant.
+- Consumer / product user.
+- Hotspot technical staff.
 - Investor.
-- Technical expert.
 
 ## Step 2: Draft Generation
 Input:
@@ -41,6 +41,7 @@ Output:
 Supported modes:
 - `single`: one OpenAI-compatible chat completion generates the whole draft under `roundtable_draft` JSON Schema.
 - `multi_agent`: the central agent first generates `roundtable_turn_plan`, then the backend calls the model once per scheduled guest turn using that speaker's persona and the accumulated transcript.
+- `autonomous_agent`: the Tauri/Rust runtime runs a deeper native graph: memory indexing, depth-controlled controller planning, per-turn memory retrieval, optional JSON web search, guest generation, finalization, and `agentTrace`.
 
 Multi-agent mode requirements:
 - At least 8 dialogue turns, preferably 10 to 14.
@@ -49,11 +50,19 @@ Multi-agent mode requirements:
 - Each turn can be longer when the speaker has relevant domain experience, but length must add substance.
 - Avoid research-report, paper, PR, and generic AI-summary tone.
 
+Autonomous mode requirements:
+- `discussionDepth` controls the target turn range: low 8-10, medium 10-14, high 12-16.
+- Supplemental documents must be indexed into local memory and made available to guest turns through retrieval context.
+- Web search is optional and must be skipped without failure when no Search API Base URL is configured.
+- Search results may be attached as sources, but generated dialogue must not imply a simulated guest personally browsed the web.
+- Debug trace records are hidden unless debug trace is enabled.
+- The archived Python FastAPI/LangGraph backend is reference material only, not a product runtime path.
+
 ## Role Rules
 - Host explains, asks, challenges, and summarizes.
-- Hotspot participant provides first-person-style intuition and industry know-how, but must not impersonate a real person.
+- Consumer / product user provides first-person-style product usage experience, willingness-to-pay intuition, and adoption friction, but must not impersonate a real person.
 - Investor analyzes business model, market structure, competition, and capital efficiency.
-- Technical expert analyzes models, engineering, data, safety, and feasibility.
+- Hotspot technical staff analyzes models, engineering, data, safety, and feasibility.
 
 ## Safety And Source Rules
 - Do not fabricate unsupported facts.

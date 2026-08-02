@@ -45,6 +45,6 @@ The product is a tool, not a reader-facing publication site. The user opens the 
 - A user can understand the selected weekly hotspot within 30 seconds of opening the workbench.
 - A complete mock workflow works without an API key.
 - Every draft keeps source links attached.
-- The central plan includes the host, hotspot participant, investor, and technical expert.
+- The central plan includes the host, consumer/product user, hotspot technical staff, and investor.
 - The generated draft includes clear disagreement or differentiated perspectives.
 - Simulated roles are never represented as real interviews.
