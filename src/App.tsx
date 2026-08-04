@@ -105,24 +105,24 @@ import type {
 void saveAsrSettings;
 
 const RSS_PRESETS: FeedSource[] = [
-  { id: "openai-blog", name: "OpenAI Blog", url: "https://openai.com/news/rss.xml", category: "company", enabled: true, lastStatus: "idle" },
-  { id: "anthropic-news", name: "Anthropic News", url: "https://www.anthropic.com/news/rss.xml", category: "company", enabled: true, lastStatus: "idle" },
-  { id: "google-ai-blog", name: "Google AI Blog", url: "https://blog.google/technology/ai/rss/", category: "company", enabled: true, lastStatus: "idle" },
-  { id: "microsoft-ai-blog", name: "Microsoft AI Blog", url: "https://blogs.microsoft.com/ai/feed/", category: "company", enabled: true, lastStatus: "idle" },
-  { id: "huggingface-blog", name: "Hugging Face Blog", url: "https://huggingface.co/blog/feed.xml", category: "developer", enabled: true, lastStatus: "idle" },
-  { id: "github-blog-ai", name: "GitHub Blog AI", url: "https://github.blog/ai-and-ml/feed/", category: "developer", enabled: true, lastStatus: "idle" },
-  { id: "arxiv-ai", name: "arXiv AI", url: "https://export.arxiv.org/rss/cs.AI", category: "research", enabled: true, lastStatus: "idle" },
-  { id: "mit-news-ai", name: "MIT News AI", url: "https://news.mit.edu/topic/artificial-intelligence2-rss.xml", category: "research", enabled: true, lastStatus: "idle" },
-  { id: "qbitai", name: "量子位", url: "https://www.qbitai.com/feed", category: "market", enabled: true, lastStatus: "idle" },
+  { id: "sspai", name: "少数派", url: "https://sspai.com/feed", category: "developer", enabled: true, lastStatus: "idle" },
+  { id: "36kr", name: "36氪", url: "https://36kr.com/feed", category: "market", enabled: true, lastStatus: "idle" },
+  { id: "leiphone", name: "雷峰网", url: "https://www.leiphone.com/feed", category: "market", enabled: true, lastStatus: "idle" },
   { id: "ithome", name: "IT之家", url: "https://www.ithome.com/rss/", category: "market", enabled: true, lastStatus: "idle" },
   { id: "geekpark", name: "极客公园", url: "https://www.geekpark.net/rss", category: "market", enabled: true, lastStatus: "idle" },
-  { id: "leiphone", name: "雷峰网", url: "https://www.leiphone.com/feed", category: "market", enabled: true, lastStatus: "idle" },
-  { id: "36kr", name: "36氪", url: "https://36kr.com/feed", category: "market", enabled: true, lastStatus: "idle" },
-  { id: "sspai", name: "少数派", url: "https://sspai.com/feed", category: "developer", enabled: true, lastStatus: "idle" },
+  { id: "qbitai", name: "量子位", url: "https://www.qbitai.com/feed", category: "market", enabled: true, lastStatus: "idle" },
+  { id: "the-decoder", name: "The Decoder", url: "https://the-decoder.com/feed/", category: "market", enabled: true, lastStatus: "idle" },
+  { id: "techcrunch-ai", name: "TechCrunch AI", url: "https://techcrunch.com/category/artificial-intelligence/feed/", category: "market", enabled: true, lastStatus: "idle" },
   { id: "nvidia-ai-blog", name: "NVIDIA AI Blog", url: "https://blogs.nvidia.com/blog/category/deep-learning/feed/", category: "market", enabled: true, lastStatus: "idle" },
   { id: "venturebeat-ai", name: "VentureBeat AI", url: "https://venturebeat.com/category/ai/feed/", category: "market", enabled: true, lastStatus: "idle" },
-  { id: "techcrunch-ai", name: "TechCrunch AI", url: "https://techcrunch.com/category/artificial-intelligence/feed/", category: "market", enabled: true, lastStatus: "idle" },
-  { id: "the-decoder", name: "The Decoder", url: "https://the-decoder.com/feed/", category: "market", enabled: true, lastStatus: "idle" }
+  { id: "microsoft-ai-blog", name: "Microsoft AI Blog", url: "https://blogs.microsoft.com/ai/feed/", category: "company", enabled: true, lastStatus: "idle" },
+  { id: "mit-news-ai", name: "MIT News AI", url: "https://news.mit.edu/topic/artificial-intelligence2-rss.xml", category: "research", enabled: true, lastStatus: "idle" },
+  { id: "google-ai-blog", name: "Google AI Blog", url: "https://blog.google/technology/ai/rss/", category: "company", enabled: true, lastStatus: "idle" },
+  { id: "openai-blog", name: "OpenAI Blog", url: "https://openai.com/news/rss.xml", category: "company", enabled: true, lastStatus: "idle" },
+  { id: "anthropic-news", name: "Anthropic News", url: "https://www.anthropic.com/news/rss.xml", category: "company", enabled: true, lastStatus: "idle" },
+  { id: "huggingface-blog", name: "Hugging Face Blog", url: "https://huggingface.co/blog/feed.xml", category: "developer", enabled: true, lastStatus: "idle" },
+  { id: "arxiv-ai", name: "arXiv AI", url: "https://export.arxiv.org/rss/cs.AI", category: "research", enabled: true, lastStatus: "idle" },
+  { id: "github-blog-ai", name: "GitHub Blog AI", url: "https://github.blog/ai-and-ml/feed/", category: "developer", enabled: true, lastStatus: "idle" }
 ];
 
 const productNavItems = [
