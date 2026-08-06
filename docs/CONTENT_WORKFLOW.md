@@ -1,17 +1,14 @@
 # Content Workflow
 
 ## Weekly Workflow
-1. Open AI小圆桌.
-2. Choose or confirm the current week range.
-3. Trigger RSS fetch.
-4. Review candidate hotspots.
-5. Manually add any important missing hotspot.
-6. Select one hotspot.
-7. Generate a central-agent roundtable plan.
-8. Review role setup, agenda, tensions, and source risks.
-9. Generate the roundtable draft.
-10. Edit for clarity, factual caution, and differentiated viewpoints.
-11. Save as `draft`, then mark `reviewed` or `published` when ready.
+1. Open AI小圆桌 on the weekly entry home.
+2. Confirm or adjust the date range (max 4 weeks).
+3. Enter 热点库: manage RSS sources / manual supplements as needed, then fetch and select candidates.
+4. Generate a roundtable agenda (opens 圆桌 → 议程).
+5. Review role setup, agenda, tensions, and source risks.
+6. Generate the roundtable draft (圆桌 → 圆桌稿).
+7. Edit for clarity, factual caution, and differentiated viewpoints.
+8. Save as `draft`, then mark `reviewed` or `published` when ready.
 
 ## RSS Sources
 Default source categories:

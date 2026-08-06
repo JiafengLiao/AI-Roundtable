@@ -15,9 +15,9 @@
         "title": "AI小圆桌",
         "width": 1440,
         "height": 920,
-        "minWidth": 980,
+        "minWidth": 1064,
         "minHeight": 680,
-        "maximized": true,
+        "maximized": false,
         "windowClassname": "ai-roundtable-main-window",
         "resizable": true,
         "fullscreen": false

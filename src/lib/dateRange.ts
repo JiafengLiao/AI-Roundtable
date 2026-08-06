@@ -1,5 +1,6 @@
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-export const MAX_HOTSPOT_RANGE_DAYS = 30;
+/** Max inclusive span between start and end dates (4 weeks). */
+export const MAX_HOTSPOT_RANGE_DAYS = 28;
 
 export type DateRange = {
   endDate: string;

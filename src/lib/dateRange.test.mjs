@@ -39,17 +39,17 @@ process.on("exit", () => {
 
 const { normalizeDateRange } = await import(pathToFileURL(join(outputDir, "dateRange.js")));
 
-test("keeps the end date within 30 days when the start date changes", () => {
+test("keeps the end date within 28 days when the start date changes", () => {
   assert.deepEqual(
     normalizeDateRange({ startDate: "2026-06-01", endDate: "2026-07-15" }, "startDate"),
-    { startDate: "2026-06-01", endDate: "2026-07-01" }
+    { startDate: "2026-06-01", endDate: "2026-06-29" }
   );
 });
 
-test("keeps the start date within 30 days when the end date changes", () => {
+test("keeps the start date within 28 days when the end date changes", () => {
   assert.deepEqual(
     normalizeDateRange({ startDate: "2026-06-01", endDate: "2026-07-15" }, "endDate"),
-    { startDate: "2026-06-15", endDate: "2026-07-15" }
+    { startDate: "2026-06-17", endDate: "2026-07-15" }
   );
 });
 

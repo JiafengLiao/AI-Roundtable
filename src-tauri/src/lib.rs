@@ -19,7 +19,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, PhysicalSize, Size, WindowEvent};
 
 // #region agent log
 fn agent_debug_log(hypothesis_id: &str, message: &str, data: serde_json::Value) {
@@ -5725,6 +5725,92 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Keep the main window near the configured 1440×920 aspect ratio while resizing.
+            // Skip while maximized/fullscreen so OS fill modes are not fought.
+            const ASPECT_RATIO: f64 = 1440.0 / 920.0;
+            const MIN_WIDTH: u32 = 1064;
+            const MIN_HEIGHT: u32 = 680;
+            const RATIO_EPSILON: f64 = 0.012;
+
+            if let Some(window) = app.get_webview_window("main") {
+                let adjusting = Arc::new(AtomicBool::new(false));
+                let last_size = Arc::new(Mutex::new((0u32, 0u32)));
+                let window_for_event = window.clone();
+                let adjusting_for_event = adjusting.clone();
+                let last_size_for_event = last_size.clone();
+
+                window.on_window_event(move |event| {
+                    let WindowEvent::Resized(size) = event else {
+                        return;
+                    };
+                    if size.width == 0 || size.height == 0 {
+                        return;
+                    }
+                    if window_for_event.is_maximized().unwrap_or(false)
+                        || window_for_event.is_fullscreen().unwrap_or(false)
+                    {
+                        if let Ok(mut last) = last_size_for_event.lock() {
+                            *last = (size.width, size.height);
+                        }
+                        return;
+                    }
+                    if adjusting_for_event.load(Ordering::SeqCst) {
+                        if let Ok(mut last) = last_size_for_event.lock() {
+                            *last = (size.width, size.height);
+                        }
+                        adjusting_for_event.store(false, Ordering::SeqCst);
+                        return;
+                    }
+
+                    let current_ratio = size.width as f64 / size.height as f64;
+                    if (current_ratio - ASPECT_RATIO).abs() <= RATIO_EPSILON {
+                        if let Ok(mut last) = last_size_for_event.lock() {
+                            *last = (size.width, size.height);
+                        }
+                        return;
+                    }
+
+                    let (last_w, last_h) = last_size_for_event
+                        .lock()
+                        .map(|guard| *guard)
+                        .unwrap_or((size.width, size.height));
+                    let dw = (size.width as i64 - last_w as i64).unsigned_abs();
+                    let dh = (size.height as i64 - last_h as i64).unsigned_abs();
+
+                    let (mut next_w, mut next_h) = if dw >= dh {
+                        let height = (size.width as f64 / ASPECT_RATIO).round().max(1.0) as u32;
+                        (size.width, height)
+                    } else {
+                        let width = (size.height as f64 * ASPECT_RATIO).round().max(1.0) as u32;
+                        (width, size.height)
+                    };
+
+                    if next_w < MIN_WIDTH || next_h < MIN_HEIGHT {
+                        let scale_w = MIN_WIDTH as f64 / next_w as f64;
+                        let scale_h = MIN_HEIGHT as f64 / next_h as f64;
+                        let scale = scale_w.max(scale_h);
+                        next_w = (next_w as f64 * scale).round() as u32;
+                        next_h = (next_h as f64 * scale).round() as u32;
+                    }
+
+                    if next_w == size.width && next_h == size.height {
+                        if let Ok(mut last) = last_size_for_event.lock() {
+                            *last = (size.width, size.height);
+                        }
+                        return;
+                    }
+
+                    adjusting_for_event.store(true, Ordering::SeqCst);
+                    if let Ok(mut last) = last_size_for_event.lock() {
+                        *last = (next_w, next_h);
+                    }
+                    let _ = window_for_event.set_size(Size::Physical(PhysicalSize {
+                        width: next_w,
+                        height: next_h,
+                    }));
+                });
+            }
+
             // #region agent log
             #[cfg(windows)]
             {
