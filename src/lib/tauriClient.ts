@@ -46,6 +46,14 @@ export function searchHotspots() {
   return invoke<HotspotCandidate[]>("search_hotspots");
 }
 
+export function getHotspotCandidates() {
+  return invoke<HotspotCandidate[]>("get_hotspot_candidates");
+}
+
+export function saveHotspotCandidates(candidates: HotspotCandidate[]) {
+  return invoke<HotspotCandidate[]>("save_hotspot_candidates", { candidates });
+}
+
 export function addManualHotspot(input: ManualHotspotInput) {
   return invoke<HotspotCandidate>("add_manual_hotspot", { input });
 }

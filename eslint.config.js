@@ -34,9 +34,12 @@ export default [
         FileReader: "readonly",
         HTMLElement: "readonly",
         MediaRecorder: "readonly",
+        MessageEvent: "readonly",
         navigator: "readonly",
         performance: "readonly",
-        window: "readonly"
+        URL: "readonly",
+        window: "readonly",
+        Worker: "readonly"
       }
     },
     plugins: {
@@ -47,6 +50,16 @@ export default [
       ...tseslint.configs.recommended.rules,
       "react-hooks/rules-of-hooks": "error",
       "react-hooks/exhaustive-deps": "warn"
+    }
+  },
+  {
+    files: ["src/**/*.worker.ts"],
+    languageOptions: {
+      globals: {
+        self: "readonly",
+        MessageEvent: "readonly",
+        console: "readonly"
+      }
     }
   }
 ];

@@ -69,7 +69,6 @@ struct HotspotCandidate {
     title: String,
     summary: String,
     category: String,
-    score: u16,
     status: String,
     #[serde(rename = "sourceCount")]
     source_count: u16,
@@ -79,6 +78,8 @@ struct HotspotCandidate {
     #[serde(rename = "createdAt")]
     created_at: String,
     note: Option<String>,
+    #[serde(rename = "displayCategory", skip_serializing_if = "Option::is_none")]
+    display_category: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1700,7 +1701,31 @@ fn save_feeds(app: tauri::AppHandle, feeds: Vec<FeedSource>) -> Result<Vec<FeedS
 }
 
 #[tauri::command]
-fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, String> {
+fn get_hotspot_candidates(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, String> {
+    let path = candidates_path(&app)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    read_json(path)
+}
+
+#[tauri::command]
+fn save_hotspot_candidates(
+    app: tauri::AppHandle,
+    candidates: Vec<HotspotCandidate>,
+) -> Result<Vec<HotspotCandidate>, String> {
+    write_json(candidates_path(&app)?, &candidates)?;
+    Ok(candidates)
+}
+
+#[tauri::command]
+async fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || search_hotspots_impl(app))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn search_hotspots_impl(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, String> {
     let mut feeds = get_or_seed_feeds(&app)?;
     let client = Client::builder()
         .timeout(Duration::from_secs(15))
@@ -1739,9 +1764,6 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
                         .unwrap_or("来源未提供摘要，请打开链接查看原文。");
                     let summary = truncate(&strip_html(raw_summary), 220);
                     let signals = keyword_signals(&format!("{title} {summary}"));
-                    let score =
-                        (55 + signals.len() as u16 * 8 + (feed.category != "other") as u16 * 10)
-                            .min(98);
                     let source = Source {
                         id: stable_id("src", &link),
                         title: title.clone(),
@@ -1755,7 +1777,6 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
                         title,
                         summary,
                         category: feed.category.clone(),
-                        score,
                         status: "new".into(),
                         source_count: 1,
                         sources: vec![source],
@@ -1766,6 +1787,7 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
                         },
                         created_at: now(),
                         note: None,
+                        display_category: None,
                     });
                 }
                 feed.last_fetched_at = Some(now());
@@ -1778,7 +1800,19 @@ fn search_hotspots(app: tauri::AppHandle) -> Result<Vec<HotspotCandidate>, Strin
         }
     }
 
-    candidates.sort_by(|a, b| b.score.cmp(&a.score));
+    candidates.sort_by(|a, b| {
+        let a_key = a
+            .sources
+            .first()
+            .and_then(|source| source.published_at.as_deref())
+            .unwrap_or(a.created_at.as_str());
+        let b_key = b
+            .sources
+            .first()
+            .and_then(|source| source.published_at.as_deref())
+            .unwrap_or(b.created_at.as_str());
+        b_key.cmp(a_key)
+    });
     candidates.truncate(30);
     write_json(feeds_path(&app)?, &feeds)?;
     write_json(candidates_path(&app)?, &candidates)?;
@@ -1889,13 +1923,13 @@ fn add_manual_hotspot(
         title: input.title,
         summary,
         category,
-        score: 80,
         status: "shortlisted".into(),
         source_count: 1,
         sources: vec![source],
         matched_signals: vec!["manual".into()],
         created_at: now(),
         note,
+        display_category: None,
     };
 
     let path = candidates_path(&app)?;
@@ -5855,6 +5889,8 @@ pub fn run() {
             get_feeds,
             get_app_data_dir,
             save_feeds,
+            get_hotspot_candidates,
+            save_hotspot_candidates,
             search_hotspots,
             import_manual_attachment,
             add_manual_hotspot,
@@ -5951,7 +5987,6 @@ mod tests {
             title: "多源圆桌：国产 Coding 争霸赛 / Claude Sonnet 5 agent 降价 / Copilot benchmark".into(),
             summary: "第一篇 RSS 摘要。\n\n第二篇 RSS 摘要。".into(),
             category: "developer".into(),
-            score: 90,
             status: "shortlisted".into(),
             source_count: 3,
             sources: vec![
@@ -5973,6 +6008,7 @@ mod tests {
             matched_signals: vec!["coding".into(), "agent".into()],
             created_at: "2026-07-01T00:00:00.000Z".into(),
             note: Some("由 3 个候选源合并生成".into()),
+            display_category: None,
         };
 
         let plan = generate_rule_based_plan(hotspot, &prompt_config);
@@ -5989,13 +6025,13 @@ mod tests {
             title: "RSS 原始标题".into(),
             summary: "RSS 原始摘要".into(),
             category: "developer".into(),
-            score: 90,
             status: "shortlisted".into(),
             source_count: 1,
             sources: vec![],
             matched_signals: vec!["agent".into()],
             created_at: "2026-07-01T00:00:00.000Z".into(),
             note: None,
+            display_category: None,
         };
         let plan = generate_rule_based_plan(hotspot, &prompt_config);
 
@@ -6056,7 +6092,6 @@ mod tests {
             title: "Agent 记忆测试".into(),
             summary: "摘要里没有私有补充材料。".into(),
             category: "developer".into(),
-            score: 88,
             status: "shortlisted".into(),
             source_count: 1,
             sources: vec![Source {
@@ -6069,6 +6104,7 @@ mod tests {
             matched_signals: vec!["agent".into()],
             created_at: "2026-07-01T00:00:00.000Z".into(),
             note: None,
+            display_category: None,
         };
         let docs = vec![SupplementalDocument {
             id: "doc-private".into(),

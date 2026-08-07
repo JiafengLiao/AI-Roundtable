@@ -21,6 +21,7 @@
     "icons:regen": "tauri icon src-tauri/icons/icon.svg"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.2.0",

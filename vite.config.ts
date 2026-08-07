@@ -3,6 +3,13 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  assetsInclude: ["**/*.onnx"],
+  optimizeDeps: {
+    exclude: ["@huggingface/transformers"]
+  },
+  worker: {
+    format: "es"
+  },
   server: {
     port: 5173,
     strictPort: true,

@@ -37,7 +37,7 @@ process.on("exit", () => {
   }
 });
 
-const { inferHotspotDisplayCategory } = await import(pathToFileURL(join(outputDir, "lib", "hotspotClassification.js")));
+const { inferHotspotDisplayCategory, resolveHotspotDisplayCategory } = await import(pathToFileURL(join(outputDir, "lib", "hotspotClassification.js")));
 
 function hotspot(overrides) {
   return {
@@ -45,7 +45,6 @@ function hotspot(overrides) {
     title: "Untitled",
     summary: "",
     category: "other",
-    score: 80,
     status: "new",
     sourceCount: 1,
     sources: [
@@ -153,5 +152,20 @@ test("uses other for low-confidence stories instead of round-robin fallback", ()
       })
     ),
     "other"
+  );
+});
+
+test("resolveHotspotDisplayCategory prefers persisted displayCategory", () => {
+  assert.equal(
+    resolveHotspotDisplayCategory(
+      hotspot({
+        category: "market",
+        title: "Cursor 发布团队版订阅功能",
+        summary: "新增企业入口、协作功能和商业化套餐",
+        matchedSignals: ["product", "launch"],
+        displayCategory: "investment"
+      })
+    ),
+    "investment"
   );
 });

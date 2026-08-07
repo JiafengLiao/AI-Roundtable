@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ElementRef, type ReactNode } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState, type ChangeEvent, type ElementRef, type ReactNode } from "react";
 import { defaultWindowIcon } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -57,6 +57,7 @@ import {
   getProviderSettings,
   getTtsSettings,
   getFeeds,
+  getHotspotCandidates,
   interruptInteractiveRoundtable,
   importManualAttachment,
   listEpisodeDrafts,
@@ -64,6 +65,7 @@ import {
   refreshModelCatalog as refreshModelCatalogFromBackend,
   saveEpisodeDraft,
   saveFeeds,
+  saveHotspotCandidates,
   saveAsrSettings,
   saveAgentRuntimeSettings,
   saveProviderSettings,
@@ -80,7 +82,8 @@ import {
 import type { ManualAttachmentImportResult, ManualHotspotInput } from "./lib/tauriClient";
 import { addDays, MAX_HOTSPOT_RANGE_DAYS, normalizeDateRange, type ChangedDateBoundary } from "./lib/dateRange";
 import { getCategoryGenerationSelection, getPostFetchSelectionState } from "./lib/workflowSelection";
-import { inferHotspotDisplayCategory, type HotspotDisplayCategoryKey } from "./lib/hotspotClassification";
+import { resolveHotspotDisplayCategory, type HotspotDisplayCategoryKey } from "./lib/hotspotClassification";
+import { finalizeHotspotCategories } from "./lib/hotspotEmbeddingClassifier";
 import { getPlanTopicDisplay } from "./lib/roundtablePlan";
 import type {
   AgentProgressEvent,
@@ -94,6 +97,7 @@ import type {
   FeedSource,
   GenerationJob,
   HotspotCandidate,
+  HotspotFilters,
   InteractiveSessionEvent,
   ModelProvider,
   ProviderSettings,
@@ -195,9 +199,8 @@ function App() {
   const [roundtablePlan, setRoundtablePlan] = useState<RoundtablePlan | null>(null);
   const [episodeDraft, setEpisodeDraft] = useState<EpisodeDraft | null>(null);
   const [lastSavedPath, setLastSavedPath] = useState("");
-  const [filters, setFilters] = useState(() => ({
+  const [filters, setFilters] = useState<HotspotFilters>(() => ({
     ...getCurrentWeekRange(),
-    minScore: 0,
     tag: "all",
     source: "all"
   }));
@@ -260,7 +263,7 @@ function App() {
     void (async () => {
       try {
         setJob({ id: "job-init", type: "fetch", status: "running", message: "正在连接 Tauri 后端" });
-        const [feedResult, catalogResult, settingsResult, ttsSettingsResult, asrSettingsResult, agentSettingsResult, historyResult, appDataDirResult] = await Promise.all([
+        const [feedResult, catalogResult, settingsResult, ttsSettingsResult, asrSettingsResult, agentSettingsResult, historyResult, appDataDirResult, candidateResult] = await Promise.all([
           getFeeds(),
           getModelCatalog(),
           getProviderSettings(),
@@ -268,9 +271,11 @@ function App() {
           getAsrSettings(),
           getAgentRuntimeSettings(),
           listEpisodeDrafts(),
-          getAppDataDir()
+          getAppDataDir(),
+          getHotspotCandidates()
         ]);
         setFeeds(feedResult);
+        setHotspots(candidateResult);
         setAppDataDir(appDataDirResult);
         let nextCatalog = catalogResult.filter((item) => item.id !== "mock");
         const startupProvider = nextCatalog.find((item) => item.id === DEFAULT_PROVIDER_ID) ?? nextCatalog[0];
@@ -296,7 +301,14 @@ function App() {
           setSelectedModel(saved?.selectedModel ?? provider.models[0] ?? "");
           setDraftGenerationMode(saved?.draftGenerationMode ?? "single");
         }
-        setJob({ id: "job-init", type: "fetch", status: "succeeded", message: `后端已连接，已加载 ${feedResult.length} 个 RSS 源` });
+        let nextCandidates = candidateResult;
+        if (candidateResult.some((hotspot) => !hotspot.displayCategory)) {
+          setJob({ id: "job-classify", type: "fetch", status: "running", message: "正在为历史热点补充分类（首次需下载嵌入模型）" });
+          nextCandidates = await finalizeHotspotCategories(candidateResult, candidateResult);
+          await saveHotspotCandidates(nextCandidates);
+          setHotspots(nextCandidates);
+        }
+        setJob({ id: "job-init", type: "fetch", status: "succeeded", message: `后端已连接，已加载 ${feedResult.length} 个 RSS 源${nextCandidates.length ? `、${nextCandidates.length} 条热点` : ""}` });
       } catch (error) {
         setJob({ id: "job-init", type: "fetch", status: "failed", message: formatError(error, "无法连接 Tauri 后端，请使用 npm.cmd run tauri:dev（Windows）或 npm run tauri:dev（macOS）打开桌面窗口") });
       }
@@ -428,15 +440,25 @@ function App() {
     try {
       setJob({ id: "job-fetch", type: "fetch", status: "running", message: "正在由 Rust 后端抓取 RSS，可能需要几十秒" });
       const result = await searchHotspots();
-      setHotspots(result);
-      const nextFiltered = filterHotspots(result, filters);
-      const nextSelection = getPostFetchSelectionState(result, nextFiltered);
-      setSelectedHotspot(nextSelection.focusedHotspot);
-      setSelectedHotspotIds(nextSelection.selectedHotspotIds);
-      setRoundtablePlan(null);
-      setEpisodeDraft(null);
-      setJob({ id: "job-fetch", type: "fetch", status: "succeeded", message: `后端抓取完成，发现 ${result.length} 个候选热点` });
-      setActiveView("hotspots");
+      setJob({
+        id: "job-classify",
+        type: "fetch",
+        status: "running",
+        message: "正在加载本地嵌入模型并分类热点（首次需下载模型）"
+      });
+      const classified = await finalizeHotspotCategories(result, hotspots);
+      await saveHotspotCandidates(classified);
+      const nextFiltered = filterHotspots(classified, filters);
+      const nextSelection = getPostFetchSelectionState(classified, nextFiltered);
+      startTransition(() => {
+        setHotspots(classified);
+        setSelectedHotspot(nextSelection.focusedHotspot);
+        setSelectedHotspotIds(nextSelection.selectedHotspotIds);
+        setRoundtablePlan(null);
+        setEpisodeDraft(null);
+        setActiveView("hotspots");
+      });
+      setJob({ id: "job-fetch", type: "fetch", status: "succeeded", message: `抓取并分类完成，发现 ${classified.length} 个候选热点` });
       await loadFeeds();
     } catch (error) {
       setJob({ id: "job-fetch", type: "fetch", status: "failed", message: formatError(error, "RSS 抓取失败") });
@@ -458,7 +480,7 @@ function App() {
   }
 
   function clearFilters() {
-    setFilters({ ...getCurrentWeekRange(), minScore: 0, tag: "all", source: "all" });
+    setFilters({ ...getCurrentWeekRange(), tag: "all", source: "all" });
   }
 
   async function refreshModelCatalog() {
@@ -507,9 +529,13 @@ function App() {
     try {
       setJob({ id: "job-manual", type: "save", status: "running", message: "正在写入手动补充热点" });
       const candidate = await addManualHotspot({ ...input, category: "other" });
-      setHotspots((current) => [candidate, ...current.filter((item) => item.id !== candidate.id)]);
-      setSelectedHotspot(candidate);
-      setSelectedHotspotIds([candidate.id]);
+      setJob({ id: "job-classify", type: "fetch", status: "running", message: "正在用本地嵌入模型分类手动热点" });
+      const [classified] = await finalizeHotspotCategories([candidate], hotspots);
+      const nextHotspots = [classified, ...hotspots.filter((item) => item.id !== classified.id)];
+      await saveHotspotCandidates(nextHotspots);
+      setHotspots(nextHotspots);
+      setSelectedHotspot(classified);
+      setSelectedHotspotIds([classified.id]);
       setJob({ id: "job-manual", type: "save", status: "succeeded", message: "手动热点已写入本地候选池" });
       setHotspotTab("candidates");
       setActiveView("hotspots");
@@ -1292,6 +1318,10 @@ function isJobRunning(job: GenerationJob, type: GenerationJob["type"]) {
   return job.status === "running" && job.type === type;
 }
 
+function isRssFetchRunning(job: GenerationJob) {
+  return job.status === "running" && job.id === "job-fetch";
+}
+
 function sidebarFooterLabel(job: GenerationJob) {
   if (job.status === "running") {
     return job.message.length > 28 ? `${job.message.slice(0, 28)}…` : job.message;
@@ -1310,7 +1340,7 @@ type ZipProductPageProps = {
   draft: EpisodeDraft | null;
   draftGenerationMode: DraftGenerationMode;
   feeds: FeedSource[];
-  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string };
+  filters: HotspotFilters;
   historyDrafts: EpisodeDraft[];
   hotspotTab: HotspotTab;
   hotspots: HotspotCandidate[];
@@ -1466,7 +1496,7 @@ function ZipCommonActions({
   onGeneratePlan: () => Promise<void>;
   onRunFetch: () => Promise<void>;
 }) {
-  const isFetching = isJobRunning(job, "fetch");
+  const isFetching = isRssFetchRunning(job);
   const isPlanning = isJobRunning(job, "plan");
   return (
     <>
@@ -1571,8 +1601,8 @@ function ZipShowPage({
   roundtablePlan,
   selectedHotspotIds
 }: ZipProductPageProps) {
-  const isFetching = isJobRunning(job, "fetch");
-  const topHotspots = [...hotspots].sort((a, b) => b.score - a.score).slice(0, 3);
+  const isFetching = isRssFetchRunning(job);
+  const topHotspots = [...hotspots].sort(compareHotspotsByRecency).slice(0, 3);
   const canOpenRoundtable = Boolean(roundtablePlan);
   const selectedCount = selectedHotspotIds.length;
   const roundtableStatus = draft
@@ -1700,7 +1730,6 @@ function ZipShowPage({
                 <div className="zipHomeHighlightTitle">{hotspot.title}</div>
                 <div className="zipHomeHighlightMeta">
                   <span>{hotspot.sourceCount} 来源</span>
-                  <ZipPill variant="success">{hotspot.score} 分</ZipPill>
                 </div>
               </div>
             ))}
@@ -1748,7 +1777,7 @@ function ZipShowPage({
 }
 
 function ZipRssPanel({ feeds, job, onAddFeed, onRefreshFeeds, onRunFetch, onToggleFeed }: ZipProductPageProps) {
-  const isFetching = isJobRunning(job, "fetch");
+  const isFetching = isRssFetchRunning(job);
   const [draftUrl, setDraftUrl] = useState("");
   const [searchText, setSearchText] = useState("");
   const shownFeeds = feeds.length > 0 ? feeds : RSS_PRESETS.slice(0, 6);
@@ -1873,7 +1902,7 @@ function buildZipCategories(hotspots: HotspotCandidate[], selectedHotspotIds: st
     { key: "other", label: "其他", icon: <Layers size={14} />, tone: "slate", articles: [] }
   ];
   hotspots.forEach((hotspot) => {
-    const bucket = buckets.find((item) => item.key === inferHotspotDisplayCategory(hotspot));
+    const bucket = buckets.find((item) => item.key === resolveHotspotDisplayCategory(hotspot));
     if (!bucket) {
       return;
     }
@@ -1902,7 +1931,7 @@ function ZipHotspotCandidatesPanel({
   onToggleHotspotSelection,
   selectedHotspotIds
 }: ZipProductPageProps) {
-  const isFetching = isJobRunning(job, "fetch");
+  const isFetching = isRssFetchRunning(job);
   const isPlanning = isJobRunning(job, "plan");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
@@ -2014,7 +2043,7 @@ function ZipHotspotCandidatesPanel({
 
 function ZipHotspotHubPage(props: ZipProductPageProps) {
   const { hotspotTab, job, onHotspotTabChange, onRunFetch, selectedHotspotIds } = props;
-  const isFetching = isJobRunning(job, "fetch");
+  const isFetching = isRssFetchRunning(job);
   const isPlanning = isJobRunning(job, "plan");
   const tabs: Array<{ id: HotspotTab; label: string }> = [
     { id: "candidates", label: "候选" },
@@ -3353,10 +3382,17 @@ function makeFeedId(url: string) {
   return `feed-${url.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || Date.now()}`;
 }
 
-function filterHotspots(
-  hotspots: HotspotCandidate[],
-  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string }
-) {
+function hotspotRecencyMs(hotspot: HotspotCandidate): number {
+  const publishedAt = hotspot.sources[0]?.publishedAt ?? hotspot.createdAt;
+  const ms = new Date(publishedAt).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function compareHotspotsByRecency(left: HotspotCandidate, right: HotspotCandidate): number {
+  return hotspotRecencyMs(right) - hotspotRecencyMs(left);
+}
+
+function filterHotspots(hotspots: HotspotCandidate[], filters: HotspotFilters) {
   return hotspots
     .filter((hotspot) => {
       const publishedAt = hotspot.sources[0]?.publishedAt ?? hotspot.createdAt;
@@ -3364,12 +3400,11 @@ function filterHotspots(
       const start = filters.startDate ? new Date(`${filters.startDate}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
       const end = filters.endDate ? new Date(`${filters.endDate}T23:59:59`).getTime() : Number.POSITIVE_INFINITY;
       const matchesTime = Number.isNaN(dateValue) || (dateValue >= start && dateValue <= end);
-      const matchesScore = hotspot.score >= filters.minScore;
       const matchesTag = filters.tag === "all" || hotspot.matchedSignals.includes(filters.tag);
       const matchesSource = filters.source === "all" || hotspot.sources.some((source) => source.publisher === filters.source);
-      return matchesTime && matchesScore && matchesTag && matchesSource;
+      return matchesTime && matchesTag && matchesSource;
     })
-    .sort((a, b) => b.score - a.score);
+    .sort(compareHotspotsByRecency);
 }
 
 function mergeHotspots(hotspots: HotspotCandidate[]) {
@@ -3380,14 +3415,12 @@ function mergeHotspots(hotspots: HotspotCandidate[]) {
   const dedupedSources = sources.filter((source, index) => sources.findIndex((item) => item.url === source.url) === index);
   const signals = hotspots.flatMap((hotspot) => hotspot.matchedSignals);
   const dedupedSignals = Array.from(new Set(signals));
-  const score = Math.round(hotspots.reduce((sum, hotspot) => sum + hotspot.score, 0) / hotspots.length);
 
   return {
     id: `merged-${hotspots.map((hotspot) => hotspot.id).join("-")}`,
     title: `多源圆桌：${hotspots.map((hotspot) => hotspot.title).slice(0, 3).join(" / ")}`,
     summary: hotspots.map((hotspot) => hotspot.summary).join("\n\n"),
     category: hotspots[0].category,
-    score,
     status: "shortlisted",
     sourceCount: dedupedSources.length,
     sources: dedupedSources,
@@ -3637,11 +3670,11 @@ function ProductHotspotWorkspace({
 }: {
   availableSources: string[];
   availableTags: string[];
-  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string };
+  filters: HotspotFilters;
   hotspots: HotspotCandidate[];
   mode: "compact" | "library";
   onClearFilters: () => void;
-  onFiltersChange: (filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string }) => void;
+  onFiltersChange: (filters: HotspotFilters) => void;
   totalHotspots: number;
   selectedHotspotIds: string[];
   onGeneratePlan: () => void;
@@ -3719,7 +3752,6 @@ function ProductHotspotQueue({
           >
             <header>
               <span className={selected ? "selectionBadge isSelected" : "selectionBadge"}>{selected ? "主选题" : "备选"}</span>
-              <strong>{hotspot.score}</strong>
             </header>
             <button className="textOpenButton" onClick={(event) => { event.stopPropagation(); void onOpenSource(hotspot); }} type="button">
               <h3>{hotspot.title}</h3>
@@ -3751,16 +3783,16 @@ function ProductFilterControls({
 }: {
   availableSources: string[];
   availableTags: string[];
-  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string };
+  filters: HotspotFilters;
   onClearFilters: () => void;
-  onFiltersChange: (filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string }) => void;
+  onFiltersChange: (filters: HotspotFilters) => void;
 }) {
   return (
     <section className="filterPanel">
       <div className="filterPanelHeader">
         <div>
           <strong>筛选候选</strong>
-          <span>按时间、热度、标签和 RSS 来源收窄本周选题。</span>
+          <span>按时间、标签和 RSS 来源收窄本周选题。</span>
         </div>
         <button className="miniButton" onClick={onClearFilters} type="button">
           <RefreshCcw size={14} />
@@ -3775,10 +3807,6 @@ function ProductFilterControls({
         <label>
           结束
           <input type="date" value={filters.endDate} onChange={(event) => onFiltersChange({ ...filters, endDate: event.target.value })} />
-        </label>
-        <label>
-          最低热度
-          <input min="0" max="100" type="number" value={filters.minScore} onChange={(event) => onFiltersChange({ ...filters, minScore: Number(event.target.value) })} />
         </label>
         <label>
           标签
@@ -3820,10 +3848,10 @@ function Workbench({
 }: {
   availableSources: string[];
   availableTags: string[];
-  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string };
+  filters: HotspotFilters;
   hotspots: HotspotCandidate[];
   onClearFilters: () => void;
-  onFiltersChange: (filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string }) => void;
+  onFiltersChange: (filters: HotspotFilters) => void;
   totalHotspots: number;
   selectedHotspotIds: string[];
   onGeneratePlan: () => void;
@@ -3913,7 +3941,6 @@ function HotspotQueue({
             </button>
             <p>{hotspot.summary}</p>
             <div className="hotspotSignals">
-              <span className="score">{hotspot.score}</span>
               {hotspot.matchedSignals.slice(0, 3).map((signal) => (
                 <span className="tag" key={signal}>{signal}</span>
               ))}
@@ -3939,16 +3966,16 @@ function FilterControls({
 }: {
   availableSources: string[];
   availableTags: string[];
-  filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string };
+  filters: HotspotFilters;
   onClearFilters: () => void;
-  onFiltersChange: (filters: { startDate: string; endDate: string; minScore: number; tag: string; source: string }) => void;
+  onFiltersChange: (filters: HotspotFilters) => void;
 }) {
   return (
     <section className="filterPanel">
       <div className="filterPanelHeader">
         <div>
           <strong>筛选候选</strong>
-          <span>按时间、热度、标签和 RSS 来源收窄工作台卡片</span>
+          <span>按时间、标签和 RSS 来源收窄工作台卡片</span>
         </div>
         <button className="miniButton" onClick={onClearFilters} type="button">
           <RefreshCcw size={14} />
@@ -3963,10 +3990,6 @@ function FilterControls({
         <label>
           结束
           <input type="date" value={filters.endDate} onChange={(event) => onFiltersChange({ ...filters, endDate: event.target.value })} />
-        </label>
-        <label>
-          最低热度
-          <input min="0" max="100" type="number" value={filters.minScore} onChange={(event) => onFiltersChange({ ...filters, minScore: Number(event.target.value) })} />
         </label>
         <label>
           标签
@@ -5197,6 +5220,14 @@ function activityProgress(job: GenerationJob, _mode: DraftGenerationMode, elapse
       title: "正在解析附件",
       detail: elapsed < 4 ? "正在读取文件内容" : "正在保存来源文件到本地内容目录",
       percent: Math.min(92, 18 + elapsed * 8)
+    };
+  }
+
+  if (job.id === "job-classify") {
+    return {
+      title: "正在分类热点",
+      detail: elapsed < 8 ? "正在加载本地多语言嵌入模型" : "正在计算热点与主题桶的语义相似度",
+      percent: Math.min(88, 18 + elapsed * 4)
     };
   }
 

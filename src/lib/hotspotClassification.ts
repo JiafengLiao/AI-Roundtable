@@ -1,6 +1,6 @@
-import type { FeedCategory, HotspotCandidate } from "../types";
+import type { FeedCategory, HotspotCandidate, HotspotDisplayCategoryKey } from "../types";
 
-export type HotspotDisplayCategoryKey = "model" | "agent" | "product" | "investment" | "research" | "other";
+export type { HotspotDisplayCategoryKey };
 
 type ScoredCategoryKey = Exclude<HotspotDisplayCategoryKey, "other">;
 
@@ -169,4 +169,8 @@ export function inferHotspotDisplayCategory(hotspot: HotspotCandidate): HotspotD
   }
 
   return best.key;
+}
+
+export function resolveHotspotDisplayCategory(hotspot: HotspotCandidate): HotspotDisplayCategoryKey {
+  return hotspot.displayCategory ?? inferHotspotDisplayCategory(hotspot);
 }

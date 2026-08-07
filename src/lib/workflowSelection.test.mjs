@@ -38,7 +38,6 @@ function hotspot(id, title, sourceId = id) {
     title,
     summary: `${title} summary`,
     category: "developer",
-    score: 80,
     status: "new",
     sourceCount: 1,
     sources: [

@@ -2944,13 +2944,14 @@ body {
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
-  overflow-y: auto;
+  overflow: hidden;
   background: #f7f8f4;
 }
 
 .mainPanel.zipMain > .zipPage {
   flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .zipPage {
@@ -4513,13 +4514,14 @@ body {
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--canvas);
 }
 
 .mainPanel.zipMain > .zipPage {
   flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .topbar {
@@ -5437,6 +5439,8 @@ body {
 .zipHomeHighlightCard {
   padding: 18px 20px;
   margin-bottom: 8px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .zipHomeHighlightHeader {
@@ -5464,14 +5468,17 @@ body {
 
 .zipHomeHighlightList {
   display: grid;
+  min-width: 0;
 }
 
 .zipHomeHighlightRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
   padding: 10px 0;
   border-bottom: 1px solid #f0f4f1;
+  min-width: 0;
 }
 
 .zipHomeHighlightRow:last-child {
@@ -5486,7 +5493,6 @@ body {
 }
 
 .zipHomeHighlightTitle {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   color: #33423d;
@@ -5500,7 +5506,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  flex: 0 0 auto;
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .zipHomeHighlightMeta > span {
@@ -5908,6 +5915,9 @@ body {
 
 /* Non-blocking backend activity bar */
 .zipActivityBar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   gap: 12px;
@@ -5918,6 +5928,7 @@ body {
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(12px);
   box-shadow: 0 -8px 24px rgba(8, 40, 32, 0.06);
+  pointer-events: auto;
 }
 
 .zipActivityBarSpinner {

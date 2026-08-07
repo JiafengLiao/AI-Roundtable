@@ -1,5 +1,7 @@
 export type FeedCategory = "research" | "company" | "developer" | "market" | "policy" | "other";
 
+export type HotspotDisplayCategoryKey = "model" | "agent" | "product" | "investment" | "research" | "other";
+
 export type FeedSource = {
   id: string;
   name: string;
@@ -23,13 +25,20 @@ export type HotspotCandidate = {
   title: string;
   summary: string;
   category: FeedCategory;
-  score: number;
   status: "new" | "shortlisted" | "planned" | "drafted";
   sourceCount: number;
   sources: Source[];
   matchedSignals: string[];
   createdAt: string;
   note?: string;
+  displayCategory?: HotspotDisplayCategoryKey;
+};
+
+export type HotspotFilters = {
+  startDate: string;
+  endDate: string;
+  tag: string;
+  source: string;
 };
 
 export type GuestId = "host" | "participant" | "investor" | "expert";
